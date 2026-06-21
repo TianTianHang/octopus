@@ -1710,13 +1710,16 @@ type ModalityTokenCount struct {
 	TokenCount int64 `json:"token_count,omitempty"`
 }
 
+const ToolTypeResponsesCustomTool = "responses_custom_tool"
+
 // Tool represents a function tool.
 type Tool struct {
 	// Type is the type of the tool.
-	// Any of "function", "image_generation".
-	Type            string           `json:"type"`
-	Function        Function         `json:"function"`
-	ImageGeneration *ImageGeneration `json:"image_generation,omitempty"`
+	// Any of "function", "image_generation", "responses_custom_tool".
+	Type               string              `json:"type"`
+	Function           Function            `json:"function"`
+	ImageGeneration    *ImageGeneration    `json:"image_generation,omitempty"`
+	ResponseCustomTool *ResponseCustomTool `json:"response_custom_tool,omitempty"`
 
 	// CacheControl is used for provider-specific cache control (e.g., Anthropic).
 	// This field is not serialized in JSON.
@@ -1791,6 +1794,142 @@ type FunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
+type ResponseCustomTool struct {
+	Name        string                    `json:"name"`
+	Description string                    `json:"description,omitempty"`
+	Format      *ResponseCustomToolFormat `json:"format,omitempty"`
+}
+
+type ResponseCustomToolFormat struct {
+	Type       string `json:"type,omitempty"`
+	Syntax     string `json:"syntax,omitempty"`
+	Definition string `json:"definition,omitempty"`
+}
+
+type ResponseCustomToolCall struct {
+	Name  string `json:"name"`
+	Input string `json:"input"`
+}
+
+func DegradeResponsesCustomToolHistory(messages []Message) []Message {
+	customCallIDs := make(map[string]struct{})
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, toolCall := range msg.ToolCalls {
+			if toolCall.Type == ToolTypeResponsesCustomTool && toolCall.ID != "" {
+				customCallIDs[toolCall.ID] = struct{}{}
+			}
+		}
+	}
+	if len(customCallIDs) == 0 {
+		return messages
+	}
+
+	result := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		switch msg.Role {
+		case "assistant":
+			result = append(result, degradeAssistantResponsesCustomToolCalls(msg)...)
+		case "tool":
+			if msg.ToolCallID != nil {
+				if _, ok := customCallIDs[*msg.ToolCallID]; ok {
+					result = append(result, Message{
+						Role: "user",
+						Content: MessageContent{
+							Content: stringPtr(formatResponsesCustomToolOutputFallback(*msg.ToolCallID, messageContentPlainText(msg.Content))),
+						},
+					})
+					continue
+				}
+			}
+			result = append(result, msg)
+		default:
+			result = append(result, msg)
+		}
+	}
+
+	return result
+}
+
+func degradeAssistantResponsesCustomToolCalls(msg Message) []Message {
+	if len(msg.ToolCalls) == 0 {
+		return []Message{msg}
+	}
+
+	regularToolCalls := make([]ToolCall, 0, len(msg.ToolCalls))
+	fallbacks := make([]string, 0)
+	for _, toolCall := range msg.ToolCalls {
+		if toolCall.Type == ToolTypeResponsesCustomTool && toolCall.ResponseCustomToolCall != nil {
+			fallbacks = append(fallbacks, formatResponsesCustomToolCallFallback(toolCall.ID, *toolCall.ResponseCustomToolCall))
+			continue
+		}
+		regularToolCalls = append(regularToolCalls, toolCall)
+	}
+	if len(fallbacks) == 0 {
+		return []Message{msg}
+	}
+
+	degraded := msg
+	degraded.ToolCalls = regularToolCalls
+	textParts := make([]string, 0, len(fallbacks)+1)
+	if existing := messageContentPlainText(msg.Content); existing != "" {
+		textParts = append(textParts, existing)
+	}
+	textParts = append(textParts, fallbacks...)
+	degraded.Content = MessageContent{Content: stringPtr(strings.Join(textParts, "\n\n"))}
+	return []Message{degraded}
+}
+
+func formatResponsesCustomToolCallFallback(callID string, toolCall ResponseCustomToolCall) string {
+	var sb strings.Builder
+	sb.WriteString("Responses custom tool call")
+	if callID != "" {
+		sb.WriteString("\ncall_id: ")
+		sb.WriteString(callID)
+	}
+	if toolCall.Name != "" {
+		sb.WriteString("\nname: ")
+		sb.WriteString(toolCall.Name)
+	}
+	sb.WriteString("\ninput:\n")
+	sb.WriteString(toolCall.Input)
+	return sb.String()
+}
+
+func formatResponsesCustomToolOutputFallback(callID, output string) string {
+	var sb strings.Builder
+	sb.WriteString("Responses custom tool output")
+	if callID != "" {
+		sb.WriteString("\ncall_id: ")
+		sb.WriteString(callID)
+	}
+	sb.WriteString("\noutput:\n")
+	sb.WriteString(output)
+	return sb.String()
+}
+
+func messageContentPlainText(content MessageContent) string {
+	if content.Content != nil {
+		return *content.Content
+	}
+	if len(content.MultipleContent) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(content.MultipleContent))
+	for _, part := range content.MultipleContent {
+		if part.Type == "text" && part.Text != nil {
+			parts = append(parts, *part.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
 // ToolCall represents a tool call in the response.
 type ToolCall struct {
 	ID string `json:"id,omitempty"`
@@ -1798,7 +1937,8 @@ type ToolCall struct {
 	// The type of the tool. Currently, only `function` is supported.
 	Type string `json:"type,omitempty"`
 
-	Function FunctionCall `json:"function"`
+	Function               FunctionCall            `json:"function"`
+	ResponseCustomToolCall *ResponseCustomToolCall `json:"response_custom_tool_call,omitempty"`
 
 	// Index is the index of the tool call in the list of tool calls.
 	// Cannot use omitempty, as an index of 0 would be omitted, which can break consumers.

@@ -733,7 +733,9 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	}
 
 	// Convert messages
-	result.Messages = convertMessages(req)
+	messageReq := *req
+	messageReq.Messages = model.DegradeResponsesCustomToolHistory(req.Messages)
+	result.Messages = convertMessages(&messageReq)
 
 	// Convert tools
 	if len(req.Tools) > 0 {
@@ -1486,6 +1488,8 @@ func convertTools(tools []model.Tool) []anthropicModel.Tool {
 				InputSchema:  tool.Function.Parameters,
 				CacheControl: convertCacheControl(tool.CacheControl),
 			})
+		case model.ToolTypeResponsesCustomTool:
+			continue
 		default:
 			// Anthropic server tools (web_search_*, code_execution_*,
 			// computer_*): replay the raw spec captured at inbound time so

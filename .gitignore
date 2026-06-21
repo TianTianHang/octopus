@@ -9,5 +9,11 @@ static/out/
 .workflow/
 .tmp/
 docs/
+!docs/
+docs/*
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/plans/
+!docs/superpowers/plans/*.md
 CONTEXT.md
 .impeccable.md

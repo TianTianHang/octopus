@@ -83,6 +83,101 @@ func TestConvertToResponsesRequestPreservesRawInputItems(t *testing.T) {
 	}
 }
 
+func TestConvertToResponsesRequestPreservesRawResponseTools(t *testing.T) {
+	req := &model.InternalLLMRequest{
+		Model: "gpt-4o",
+		Messages: []model.Message{{
+			Role: "user",
+			Content: model.MessageContent{
+				Content: stringPtr("hello"),
+			},
+		}},
+		Tools: []model.Tool{{
+			Type:     "function",
+			Function: model.Function{Name: "normalized_lookup"},
+		}},
+	}
+	req.SetOpenAIRawResponseTools(json.RawMessage(`[
+		{"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":"start: PATCH"}},
+		{"type":"tool_search","execution":"client"}
+	]`))
+
+	responsesReq := ConvertToResponsesRequest(req)
+	body, err := json.Marshal(responsesReq)
+	if err != nil {
+		t.Fatalf("marshal responses request failed: %v", err)
+	}
+
+	var payload struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal responses request failed: %v", err)
+	}
+	if len(payload.Tools) != 2 {
+		t.Fatalf("expected raw tools to be preserved, got %#v", payload.Tools)
+	}
+	if payload.Tools[0]["type"] != "custom" || payload.Tools[0]["name"] != "apply_patch" {
+		t.Fatalf("expected custom raw tool to be preserved, got %#v", payload.Tools[0])
+	}
+	format, ok := payload.Tools[0]["format"].(map[string]any)
+	if !ok || format["syntax"] != "lark" || format["definition"] != "start: PATCH" {
+		t.Fatalf("expected custom grammar format to be preserved, got %#v", payload.Tools[0])
+	}
+	if payload.Tools[1]["type"] != "tool_search" || payload.Tools[1]["execution"] != "client" {
+		t.Fatalf("expected raw-only tool to be preserved, got %#v", payload.Tools[1])
+	}
+}
+
+func TestConvertToResponsesRequestEmitsCustomResponseTools(t *testing.T) {
+	req := &model.InternalLLMRequest{
+		Model: "gpt-4o",
+		Messages: []model.Message{{
+			Role: "user",
+			Content: model.MessageContent{
+				Content: stringPtr("hello"),
+			},
+		}},
+		Tools: []model.Tool{{
+			Type: model.ToolTypeResponsesCustomTool,
+			ResponseCustomTool: &model.ResponseCustomTool{
+				Name:        "apply_patch",
+				Description: "Use apply_patch.",
+				Format: &model.ResponseCustomToolFormat{
+					Type:       "grammar",
+					Syntax:     "lark",
+					Definition: "start: PATCH",
+				},
+			},
+		}},
+	}
+
+	responsesReq := ConvertToResponsesRequest(req)
+	body, err := json.Marshal(responsesReq)
+	if err != nil {
+		t.Fatalf("marshal responses request failed: %v", err)
+	}
+
+	var payload struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal responses request failed: %v", err)
+	}
+	if len(payload.Tools) != 1 {
+		t.Fatalf("expected custom response tool, got %#v", payload.Tools)
+	}
+	if payload.Tools[0]["type"] != "custom" ||
+		payload.Tools[0]["name"] != "apply_patch" ||
+		payload.Tools[0]["description"] != "Use apply_patch." {
+		t.Fatalf("expected custom response tool definition, got %#v", payload.Tools[0])
+	}
+	format, ok := payload.Tools[0]["format"].(map[string]any)
+	if !ok || format["type"] != "grammar" || format["syntax"] != "lark" || format["definition"] != "start: PATCH" {
+		t.Fatalf("expected custom grammar format, got %#v", payload.Tools[0])
+	}
+}
+
 func TestConvertToResponsesRequestPrefersUpdatedRawInputItemsOverStaleOpenAIExtension(t *testing.T) {
 	req := &model.InternalLLMRequest{
 		Model: "gpt-4o",
@@ -179,6 +274,53 @@ func TestMarshalResponsesInputItemsBuildsArrayInput(t *testing.T) {
 	}
 	if len(items) != 1 || items[0]["type"] != "function_call" {
 		t.Fatalf("expected assistant tool call to become function_call item, got %#v", items)
+	}
+}
+
+func TestMarshalResponsesInputItemsPreservesCustomToolCallHistory(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: main.py\n+print(\"hello\")\n*** End Patch\n"
+
+	data, err := MarshalResponsesInputItems([]model.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []model.ToolCall{{
+				ID:   "call_patch_001",
+				Type: model.ToolTypeResponsesCustomTool,
+				ResponseCustomToolCall: &model.ResponseCustomToolCall{
+					Name:  "apply_patch",
+					Input: patch,
+				},
+			}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: stringPtr("call_patch_001"),
+			Content: model.MessageContent{
+				Content: stringPtr("Patch applied successfully."),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal responses input items failed: %v", err)
+	}
+
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("unmarshal marshaled items failed: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected custom tool call and output items, got %#v", items)
+	}
+	if items[0]["type"] != "custom_tool_call" ||
+		items[0]["call_id"] != "call_patch_001" ||
+		items[0]["name"] != "apply_patch" ||
+		items[0]["input"] != patch {
+		t.Fatalf("expected custom_tool_call item, got %#v", items[0])
+	}
+	if items[1]["type"] != "custom_tool_call_output" ||
+		items[1]["call_id"] != "call_patch_001" ||
+		items[1]["output"] != "Patch applied successfully." {
+		t.Fatalf("expected custom_tool_call_output item, got %#v", items[1])
 	}
 }
 

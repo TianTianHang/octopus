@@ -82,7 +82,14 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 
 	i.truncation = req.Truncation
 
-	return convertToInternalRequest(&req)
+	internalReq, err := convertToInternalRequest(&req)
+	if err != nil {
+		return nil, err
+	}
+	if rawTools := extractRawResponsesTools(body); len(rawTools) > 0 {
+		internalReq.SetOpenAIRawResponseTools(rawTools)
+	}
+	return internalReq, nil
 }
 
 func (i *ResponseInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
@@ -947,9 +954,10 @@ type ResponsesItem struct {
 	Annotations *[]ResponsesAnnotation `json:"annotations,omitempty"`
 
 	// Function call fields
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	CallID    string  `json:"call_id,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Arguments string  `json:"arguments,omitempty"`
+	Input     *string `json:"input,omitempty"`
 
 	// Function call output
 	Output *ResponsesInput `json:"output,omitempty"`
@@ -1037,16 +1045,23 @@ type ResponsesAnnotation struct {
 }
 
 type ResponsesTool struct {
-	Type              string         `json:"type,omitempty"`
-	Name              string         `json:"name,omitempty"`
-	Description       string         `json:"description,omitempty"`
-	Parameters        map[string]any `json:"parameters,omitempty"`
-	Strict            *bool          `json:"strict,omitempty"`
-	Background        string         `json:"background,omitempty"`
-	OutputFormat      string         `json:"output_format,omitempty"`
-	Quality           string         `json:"quality,omitempty"`
-	Size              string         `json:"size,omitempty"`
-	OutputCompression *int64         `json:"output_compression,omitempty"`
+	Type              string                     `json:"type,omitempty"`
+	Name              string                     `json:"name,omitempty"`
+	Description       string                     `json:"description,omitempty"`
+	Parameters        map[string]any             `json:"parameters,omitempty"`
+	Strict            *bool                      `json:"strict,omitempty"`
+	Format            *ResponsesCustomToolFormat `json:"format,omitempty"`
+	Background        string                     `json:"background,omitempty"`
+	OutputFormat      string                     `json:"output_format,omitempty"`
+	Quality           string                     `json:"quality,omitempty"`
+	Size              string                     `json:"size,omitempty"`
+	OutputCompression *int64                     `json:"output_compression,omitempty"`
+}
+
+type ResponsesCustomToolFormat struct {
+	Type       string `json:"type,omitempty"`
+	Syntax     string `json:"syntax,omitempty"`
+	Definition string `json:"definition,omitempty"`
 }
 
 type ResponsesToolChoice struct {
@@ -1261,76 +1276,25 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 }
 
 func markOpenAIResponsesPassthroughIfNeeded(req *ResponsesRequest, chatReq *model.InternalLLMRequest) {
-	if req == nil || chatReq == nil {
-		return
-	}
-	if unsupportedToolType := firstUnsupportedResponsesToolType(req.Tools); unsupportedToolType != "" {
-		chatReq.MarkOpenAIResponsesPassthroughRequired("tool:" + unsupportedToolType)
-	}
-	if unsupportedItemType := firstUnsupportedResponsesInputType(&req.Input); unsupportedItemType != "" {
-		chatReq.MarkOpenAIResponsesPassthroughRequired("input:" + unsupportedItemType)
-	}
+	// Responses-native tools and items are intentionally allowed to degrade
+	// through non-Responses channels. Raw input items/tools are preserved for
+	// Responses outbound replay, while Chat outbound filters unsupported tools.
 }
 
-func firstUnsupportedResponsesToolType(tools []ResponsesTool) string {
-	for _, tool := range tools {
-		switch tool.Type {
-		case "function", "image_generation":
-			continue
-		case "":
-			return "<empty>"
-		default:
-			return tool.Type
-		}
+func extractRawResponsesTools(body []byte) json.RawMessage {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
 	}
-	return ""
-}
-
-func firstUnsupportedResponsesInputType(input *ResponsesInput) string {
-	if input == nil || len(input.Items) == 0 {
-		return ""
+	tools := raw["tools"]
+	if len(tools) == 0 || strings.TrimSpace(string(tools)) == "null" {
+		return nil
 	}
-	for _, item := range input.Items {
-		if unsupported := firstUnsupportedResponsesTopLevelItemType(&item); unsupported != "" {
-			return unsupported
-		}
+	var items []json.RawMessage
+	if err := json.Unmarshal(tools, &items); err != nil {
+		return nil
 	}
-	return ""
-}
-
-func firstUnsupportedResponsesTopLevelItemType(item *ResponsesItem) string {
-	if item == nil {
-		return ""
-	}
-	switch item.Type {
-	case "", "message", "input_text", "input_image", "input_file", "input_audio", "function_call", "function_call_output", "reasoning":
-	default:
-		return item.Type
-	}
-	if unsupported := firstUnsupportedResponsesContentItemType(item.Content); unsupported != "" {
-		return unsupported
-	}
-	if unsupported := firstUnsupportedResponsesContentItemType(item.Output); unsupported != "" {
-		return unsupported
-	}
-	return ""
-}
-
-func firstUnsupportedResponsesContentItemType(input *ResponsesInput) string {
-	if input == nil || input.Text != nil || len(input.Items) == 0 {
-		return ""
-	}
-	for _, item := range input.Items {
-		switch item.Type {
-		case "input_text", "text", "output_text", "input_image", "input_file", "input_audio":
-			continue
-		case "":
-			return "<empty>"
-		default:
-			return item.Type
-		}
-	}
-	return ""
+	return append(json.RawMessage(nil), tools...)
 }
 
 func convertToolChoiceToInternal(src *ResponsesToolChoice) *model.ToolChoice {
@@ -1438,11 +1402,41 @@ func convertItemToMessage(item *ResponsesItem) (*model.Message, error) {
 			},
 		}, nil
 
+	case "custom_tool_call":
+		input := ""
+		if item.Input != nil {
+			input = *item.Input
+		}
+		return &model.Message{
+			Role: "assistant",
+			ToolCalls: []model.ToolCall{
+				{
+					ID:   item.CallID,
+					Type: model.ToolTypeResponsesCustomTool,
+					ResponseCustomToolCall: &model.ResponseCustomToolCall{
+						Name:  item.Name,
+						Input: input,
+					},
+				},
+			},
+		}, nil
+
 	case "function_call_output":
 		return &model.Message{
 			Role:       "tool",
 			ToolCallID: lo.ToPtr(item.CallID),
 			Content:    convertInputToMessageContent(*item.Output),
+		}, nil
+
+	case "custom_tool_call_output":
+		content := model.MessageContent{}
+		if item.Output != nil {
+			content = convertInputToMessageContent(*item.Output)
+		}
+		return &model.Message{
+			Role:       "tool",
+			ToolCallID: lo.ToPtr(item.CallID),
+			Content:    content,
 		}, nil
 
 	case "reasoning":
@@ -1592,6 +1586,23 @@ func convertToolsToInternal(tools []ResponsesTool) ([]model.Tool, error) {
 					Size:              tool.Size,
 					OutputCompression: tool.OutputCompression,
 				},
+			})
+
+		case "custom":
+			customTool := &model.ResponseCustomTool{
+				Name:        tool.Name,
+				Description: tool.Description,
+			}
+			if tool.Format != nil {
+				customTool.Format = &model.ResponseCustomToolFormat{
+					Type:       tool.Format.Type,
+					Syntax:     tool.Format.Syntax,
+					Definition: tool.Format.Definition,
+				}
+			}
+			result = append(result, model.Tool{
+				Type:               model.ToolTypeResponsesCustomTool,
+				ResponseCustomTool: customTool,
 			})
 		}
 	}

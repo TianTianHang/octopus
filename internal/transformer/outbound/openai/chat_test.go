@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -234,6 +235,73 @@ func TestBuildChatCompletionsRequestDropsImageGenerationTools(t *testing.T) {
 	tool, ok := tools[0].(map[string]any)
 	if !ok || tool["type"] != "function" {
 		t.Fatalf("expected function tool in chat payload, got %#v", tools[0])
+	}
+}
+
+func TestBuildChatCompletionsRequestDegradesResponsesCustomToolHistoryToText(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: main.py\n+print(\"hello\")\n*** End Patch\n"
+	req := &model.InternalLLMRequest{
+		Model: "gpt-4o",
+		Messages: []model.Message{
+			{
+				Role: "assistant",
+				ToolCalls: []model.ToolCall{{
+					ID:   "call_patch_001",
+					Type: model.ToolTypeResponsesCustomTool,
+					ResponseCustomToolCall: &model.ResponseCustomToolCall{
+						Name:  "apply_patch",
+						Input: patch,
+					},
+				}},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: stringPtr("call_patch_001"),
+				Content: model.MessageContent{
+					Content: stringPtr("Patch applied successfully."),
+				},
+			},
+		},
+		Tools: []model.Tool{{
+			Type: model.ToolTypeResponsesCustomTool,
+			ResponseCustomTool: &model.ResponseCustomTool{
+				Name: "apply_patch",
+			},
+		}},
+	}
+
+	wire := buildChatCompletionsRequest(req)
+	body, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var payload struct {
+		Messages []struct {
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			ToolCalls any    `json:"tool_calls"`
+		} `json:"messages"`
+		Tools []any `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload.Messages) != 2 {
+		t.Fatalf("expected custom call and output fallback messages, got %#v", payload.Messages)
+	}
+	if payload.Messages[0].Role != "assistant" ||
+		payload.Messages[0].ToolCalls != nil ||
+		!strings.Contains(payload.Messages[0].Content, "apply_patch") ||
+		!strings.Contains(payload.Messages[0].Content, patch) {
+		t.Fatalf("expected custom tool call as assistant text fallback, got %#v", payload.Messages[0])
+	}
+	if payload.Messages[1].Role != "user" ||
+		!strings.Contains(payload.Messages[1].Content, "Patch applied successfully.") {
+		t.Fatalf("expected custom tool output as user text fallback, got %#v", payload.Messages[1])
+	}
+	if payload.Tools != nil {
+		t.Fatalf("expected custom tool definition to be filtered for chat, got %#v", payload.Tools)
 	}
 }
 

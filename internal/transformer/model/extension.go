@@ -45,6 +45,7 @@ type OpenAIExtension struct {
 	ResponsesPassthroughRequired bool            `json:"responses_passthrough_required,omitempty"`
 	ResponsesPassthroughReason   string          `json:"responses_passthrough_reason,omitempty"`
 	RawResponseItems             json.RawMessage `json:"raw_response_items,omitempty"`
+	RawResponseTools             json.RawMessage `json:"raw_response_tools,omitempty"`
 }
 
 type OpenAIResponsesOptions struct {
@@ -135,6 +136,7 @@ func CloneProviderExtensions(ext *ProviderExtensions) *ProviderExtensions {
 			ResponsesPassthroughRequired: ext.OpenAI.ResponsesPassthroughRequired,
 			ResponsesPassthroughReason:   ext.OpenAI.ResponsesPassthroughReason,
 			RawResponseItems:             cloneRawMessage(ext.OpenAI.RawResponseItems),
+			RawResponseTools:             cloneRawMessage(ext.OpenAI.RawResponseTools),
 		}
 	}
 	if ext.Volcengine != nil {
@@ -203,6 +205,7 @@ func (r *InternalLLMRequest) SetOpenAIExtensions(ext OpenAIExtension) {
 		ResponsesPassthroughRequired: ext.ResponsesPassthroughRequired,
 		ResponsesPassthroughReason:   ext.ResponsesPassthroughReason,
 		RawResponseItems:             cloneRawMessage(ext.RawResponseItems),
+		RawResponseTools:             cloneRawMessage(ext.RawResponseTools),
 	}
 	mergeOpenAIExtension(providerExtensions.OpenAI, &extCopy)
 	r.OpenAIResponsesPassthroughRequired = providerExtensions.OpenAI.ResponsesPassthroughRequired
@@ -225,6 +228,24 @@ func (r *InternalLLMRequest) SetOpenAIRawInputItems(raw json.RawMessage) {
 	}
 	r.RawInputItems = cloneRawMessage(raw)
 	providerExtensions.OpenAI.RawResponseItems = cloneRawMessage(raw)
+}
+
+func (r *InternalLLMRequest) SetOpenAIRawResponseTools(raw json.RawMessage) {
+	if r == nil {
+		return
+	}
+	providerExtensions := r.ensureProviderExtensions()
+	if providerExtensions.OpenAI == nil {
+		providerExtensions.OpenAI = &OpenAIExtension{}
+	}
+	providerExtensions.OpenAI.RawResponseTools = cloneRawMessage(raw)
+}
+
+func (r *InternalLLMRequest) OpenAIRawResponseTools() json.RawMessage {
+	if r == nil || r.ProviderExtensions == nil || r.ProviderExtensions.OpenAI == nil {
+		return nil
+	}
+	return cloneRawMessage(r.ProviderExtensions.OpenAI.RawResponseTools)
 }
 
 func (r *InternalLLMRequest) SetOpenAIResponsesOptions(options OpenAIResponsesOptions) {
@@ -438,5 +459,8 @@ func mergeOpenAIExtension(dst *OpenAIExtension, src *OpenAIExtension) {
 	}
 	if len(src.RawResponseItems) > 0 {
 		dst.RawResponseItems = cloneRawMessage(src.RawResponseItems)
+	}
+	if len(src.RawResponseTools) > 0 {
+		dst.RawResponseTools = cloneRawMessage(src.RawResponseTools)
 	}
 }

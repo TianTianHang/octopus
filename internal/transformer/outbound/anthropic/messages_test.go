@@ -50,6 +50,56 @@ func TestTransformRequestRawRewritesModel(t *testing.T) {
 	}
 }
 
+func TestConvertToAnthropicRequestDegradesResponsesCustomToolHistoryToText(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: main.py\n+print(\"hello\")\n*** End Patch\n"
+	req := &model.InternalLLMRequest{
+		Model: "claude-3-5-sonnet-20241022",
+		Messages: []model.Message{
+			{
+				Role: "assistant",
+				ToolCalls: []model.ToolCall{{
+					ID:   "call_patch_001",
+					Type: model.ToolTypeResponsesCustomTool,
+					ResponseCustomToolCall: &model.ResponseCustomToolCall{
+						Name:  "apply_patch",
+						Input: patch,
+					},
+				}},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: stringPtr("call_patch_001"),
+				Content: model.MessageContent{
+					Content: stringPtr("Patch applied successfully."),
+				},
+			},
+		},
+		Tools: []model.Tool{{
+			Type: model.ToolTypeResponsesCustomTool,
+			ResponseCustomTool: &model.ResponseCustomTool{
+				Name: "apply_patch",
+			},
+		}},
+	}
+
+	wire := convertToAnthropicRequest(req)
+	body, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	payload := string(body)
+
+	if strings.Contains(payload, "tool_use") || strings.Contains(payload, "tool_result") || strings.Contains(payload, "responses_custom_tool") {
+		t.Fatalf("expected custom tool history to be text fallback, got %s", payload)
+	}
+	if strings.Contains(payload, `"tools"`) {
+		t.Fatalf("expected custom tool definition to be filtered for anthropic, got %s", payload)
+	}
+	if !strings.Contains(payload, "apply_patch") || !strings.Contains(payload, "Patch applied successfully.") {
+		t.Fatalf("expected custom tool input/output to remain visible, got %s", payload)
+	}
+}
+
 // TestCollectBetaHeadersAutomation covers A-H7 — each new signal drives a
 // specific anthropic-beta header. The test is table-driven so adding a
 // future trigger only needs a new row, not a whole test function.

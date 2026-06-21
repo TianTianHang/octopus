@@ -337,6 +337,7 @@ type ResponsesRequest struct {
 	Instructions      string                `json:"instructions,omitempty"`
 	Input             ResponsesInput        `json:"input"`
 	Tools             []ResponsesTool       `json:"tools,omitempty"`
+	RawTools          json.RawMessage       `json:"-"`
 	ToolChoice        *ResponsesToolChoice  `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                 `json:"parallel_tool_calls,omitempty"`
 	Stream            *bool                 `json:"stream,omitempty"`
@@ -364,6 +365,26 @@ type ResponsesRequest struct {
 	StreamOptions        json.RawMessage `json:"stream_options,omitempty"`
 	Include              []string        `json:"include,omitempty"`
 	TopLogprobs          *int64          `json:"top_logprobs,omitempty"`
+}
+
+func (r ResponsesRequest) MarshalJSON() ([]byte, error) {
+	type Alias ResponsesRequest
+	alias := Alias(r)
+	if len(r.RawTools) == 0 {
+		return json.Marshal(alias)
+	}
+
+	alias.Tools = nil
+	body, err := json.Marshal(alias)
+	if err != nil {
+		return nil, err
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+	obj["tools"] = cloneRawJSON(r.RawTools)
+	return json.Marshal(obj)
 }
 
 type ResponsesInput struct {
@@ -411,9 +432,10 @@ type ResponsesItem struct {
 	Annotations []ResponsesAnnotation `json:"annotations,omitempty"`
 
 	// Function call fields
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	CallID    string  `json:"call_id,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Arguments string  `json:"arguments,omitempty"`
+	Input     *string `json:"input,omitempty"`
 
 	// Function call output
 	Output *ResponsesInput `json:"output,omitempty"`
@@ -460,16 +482,23 @@ type ResponsesAnnotation struct {
 }
 
 type ResponsesTool struct {
-	Type              string         `json:"type,omitempty"`
-	Name              string         `json:"name,omitempty"`
-	Description       string         `json:"description,omitempty"`
-	Parameters        map[string]any `json:"parameters,omitempty"`
-	Strict            *bool          `json:"strict,omitempty"`
-	Background        string         `json:"background,omitempty"`
-	OutputFormat      string         `json:"output_format,omitempty"`
-	Quality           string         `json:"quality,omitempty"`
-	Size              string         `json:"size,omitempty"`
-	OutputCompression *int64         `json:"output_compression,omitempty"`
+	Type              string                     `json:"type,omitempty"`
+	Name              string                     `json:"name,omitempty"`
+	Description       string                     `json:"description,omitempty"`
+	Parameters        map[string]any             `json:"parameters,omitempty"`
+	Strict            *bool                      `json:"strict,omitempty"`
+	Format            *ResponsesCustomToolFormat `json:"format,omitempty"`
+	Background        string                     `json:"background,omitempty"`
+	OutputFormat      string                     `json:"output_format,omitempty"`
+	Quality           string                     `json:"quality,omitempty"`
+	Size              string                     `json:"size,omitempty"`
+	OutputCompression *int64                     `json:"output_compression,omitempty"`
+}
+
+type ResponsesCustomToolFormat struct {
+	Type       string `json:"type,omitempty"`
+	Syntax     string `json:"syntax,omitempty"`
+	Definition string `json:"definition,omitempty"`
 }
 
 type ResponsesToolChoice struct {
@@ -889,8 +918,11 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	// Convert input from messages or preserve original array items when available.
 	result.Input = buildResponsesInput(req)
 
-	// Convert tools
-	if len(req.Tools) > 0 {
+	// Convert tools, preserving Responses-native tool definitions when the
+	// request originated from the Responses API.
+	if rawTools := req.OpenAIRawResponseTools(); len(rawTools) > 0 {
+		result.RawTools = rawTools
+	} else if len(req.Tools) > 0 {
 		result.Tools = convertToolsToResponses(req.Tools)
 	}
 
@@ -1039,6 +1071,7 @@ func convertInputFromMessages(msgs []model.Message, transformOptions model.Trans
 	}
 
 	var items []ResponsesItem
+	customToolCallIDs := make(map[string]struct{})
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "system", "developer":
@@ -1046,9 +1079,9 @@ func convertInputFromMessages(msgs []model.Message, transformOptions model.Trans
 		case "user":
 			items = append(items, convertUserMessageToResponses(msg))
 		case "assistant":
-			items = append(items, convertAssistantMessageToResponses(msg)...)
+			items = append(items, convertAssistantMessageToResponses(msg, customToolCallIDs)...)
 		case "tool":
-			items = append(items, convertToolMessageToResponses(msg))
+			items = append(items, convertToolMessageToResponses(msg, customToolCallIDs))
 		}
 	}
 
@@ -1127,7 +1160,7 @@ func convertUserMessageToResponses(msg model.Message) ResponsesItem {
 	}
 }
 
-func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
+func convertAssistantMessageToResponses(msg model.Message, customToolCallIDs map[string]struct{}) []ResponsesItem {
 	var items []ResponsesItem
 
 	// Handle reasoning content
@@ -1147,6 +1180,18 @@ func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
 
 	// Handle tool calls
 	for _, tc := range msg.ToolCalls {
+		if tc.Type == model.ToolTypeResponsesCustomTool && tc.ResponseCustomToolCall != nil {
+			if tc.ID != "" && customToolCallIDs != nil {
+				customToolCallIDs[tc.ID] = struct{}{}
+			}
+			items = append(items, ResponsesItem{
+				Type:   "custom_tool_call",
+				CallID: tc.ID,
+				Name:   tc.ResponseCustomToolCall.Name,
+				Input:  lo.ToPtr(tc.ResponseCustomToolCall.Input),
+			})
+			continue
+		}
 		items = append(items, ResponsesItem{
 			Type:      "function_call",
 			CallID:    tc.ID,
@@ -1185,7 +1230,7 @@ func convertAssistantMessageToResponses(msg model.Message) []ResponsesItem {
 	return sanitizeResponsesItems(items)
 }
 
-func convertToolMessageToResponses(msg model.Message) ResponsesItem {
+func convertToolMessageToResponses(msg model.Message, customToolCallIDs map[string]struct{}) ResponsesItem {
 	var output ResponsesInput
 
 	if msg.Content.Content != nil {
@@ -1205,8 +1250,13 @@ func convertToolMessageToResponses(msg model.Message) ResponsesItem {
 		output.Text = lo.ToPtr("")
 	}
 
+	itemType := "function_call_output"
+	if _, ok := customToolCallIDs[lo.FromPtr(msg.ToolCallID)]; ok {
+		itemType = "custom_tool_call_output"
+	}
+
 	return ResponsesItem{
-		Type:   "function_call_output",
+		Type:   itemType,
 		CallID: lo.FromPtr(msg.ToolCallID),
 		Output: &output,
 	}
@@ -1240,6 +1290,23 @@ func convertToolsToResponses(tools []model.Tool) []ResponsesTool {
 				rt.Quality = tool.ImageGeneration.Quality
 				rt.Size = tool.ImageGeneration.Size
 				rt.OutputCompression = tool.ImageGeneration.OutputCompression
+			}
+			result = append(result, rt)
+		case model.ToolTypeResponsesCustomTool:
+			if tool.ResponseCustomTool == nil {
+				continue
+			}
+			rt := ResponsesTool{
+				Type:        "custom",
+				Name:        tool.ResponseCustomTool.Name,
+				Description: tool.ResponseCustomTool.Description,
+			}
+			if tool.ResponseCustomTool.Format != nil {
+				rt.Format = &ResponsesCustomToolFormat{
+					Type:       tool.ResponseCustomTool.Format.Type,
+					Syntax:     tool.ResponseCustomTool.Format.Syntax,
+					Definition: tool.ResponseCustomTool.Format.Definition,
+				}
 			}
 			result = append(result, rt)
 		}
