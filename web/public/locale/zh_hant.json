@@ -820,6 +820,8 @@
             "channelProxyPlaceholder": "可選：僅對該供應源生效（覆蓋全域代理）",
             "paramOverride": "參數覆蓋",
             "paramOverridePlaceholder": "可選：JSON 字串，用於覆蓋請求參數",
+            "paramDrop": "丟棄參數",
+            "paramDropPlaceholder": "可選：要從請求中移除的頂層參數 JSON 字串陣列，例如：[\"prompt_cache_key\",\"store\"]",
             "model": "模型",
             "enabled": "啟用",
             "proxy": "使用代理",

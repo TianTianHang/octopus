@@ -22,6 +22,7 @@ export function CreateDialogContent() {
         proxy_mode: 'direct',
         proxy_config_id: null,
         param_override: '',
+        param_drop: '',
         keys: [{ enabled: true, channel_key: '', remark: '' }],
         model: '',
         custom_model: '',
@@ -47,6 +48,7 @@ export function CreateDialogContent() {
             .filter((h) => h.header_key && h.header_value !== '');
 
         const paramOverride = formData.param_override.trim();
+        const paramDrop = formData.param_drop.trim();
         if (formData.proxy_mode === 'pool' && !formData.proxy_config_id) {
             toast.error(tProxy('selectRequired'));
             return;
@@ -67,6 +69,7 @@ export function CreateDialogContent() {
                 custom_header: normalizedHeaders,
                 ws_mode: formData.ws_mode,
                 param_override: paramOverride,
+                param_drop: paramDrop,
                 match_regex: formData.match_regex.trim(),
             },
             {
@@ -80,6 +83,7 @@ export function CreateDialogContent() {
                         proxy_mode: 'direct',
                         proxy_config_id: null,
                         param_override: '',
+                        param_drop: '',
                         keys: [{ enabled: true, channel_key: '', remark: '' }],
                         model: '',
                         custom_model: '',

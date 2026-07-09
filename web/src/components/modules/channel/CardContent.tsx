@@ -46,6 +46,7 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         proxy_mode: channel.proxy_mode ?? 'direct',
         proxy_config_id: channel.proxy_config_id ?? null,
         param_override: channel.param_override ?? '',
+        param_drop: channel.param_drop ?? '',
         keys: channel.keys.length > 0
             ? channel.keys.map((k) => ({
                 id: k.id,
@@ -111,8 +112,15 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         const nextParamOverride = formData.param_override.trim();
         const curParamOverride = channel.param_override ?? '';
         if (nextParamOverride !== curParamOverride) {
-            // Empty string means "clear" for patch semantics; backend maps it to NULL.
+            // Empty string clears the effective config; helpers ignore blank config values.
             req.param_override = nextParamOverride;
+        }
+
+        const nextParamDrop = formData.param_drop.trim();
+        const curParamDrop = channel.param_drop ?? '';
+        if (nextParamDrop !== curParamDrop) {
+            // Empty string clears the effective config; helpers ignore blank config values.
+            req.param_drop = nextParamDrop;
         }
 
         const nextMatchRegex = formData.match_regex.trim();

@@ -820,6 +820,8 @@
             "channelProxyPlaceholder": "可选：仅对该渠道生效（覆盖全局代理）",
             "paramOverride": "参数覆盖",
             "paramOverridePlaceholder": "可选：JSON 字符串，用于覆盖请求参数",
+            "paramDrop": "丢弃参数",
+            "paramDropPlaceholder": "可选：要从请求中移除的顶层参数 JSON 字符串数组，例如：[\"prompt_cache_key\",\"store\"]",
             "model": "模型",
             "enabled": "启用",
             "proxy": "使用代理",

@@ -75,6 +75,7 @@ export type Channel = {
     custom_header: CustomHeader[];
     ws_mode: ChannelWSMode;
     param_override?: string | null;
+    param_drop?: string | null;
     match_regex?: string | null;
     managed: boolean;
     managed_source?: ManagedChannelSource | null;
@@ -106,6 +107,7 @@ export type CreateChannelRequest = {
     custom_header?: CustomHeader[];
     ws_mode?: ChannelWSMode;
     param_override?: string | null;
+    param_drop?: string | null;
     match_regex?: string | null;
 };
 
@@ -127,6 +129,7 @@ export type UpdateChannelRequest = {
     custom_header?: CustomHeader[];
     ws_mode?: ChannelWSMode;
     param_override?: string | null;
+    param_drop?: string | null;
     match_regex?: string | null;
     // keys diff
     keys_to_add?: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;

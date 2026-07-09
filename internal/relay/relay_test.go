@@ -1026,6 +1026,68 @@ func TestHandlerAppliesChannelParamOverride(t *testing.T) {
 	}
 }
 
+func TestHandlerAppliesChannelParamDropAfterOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := setupRelayTestDB(t)
+
+	var capturedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream request body failed: %v", err)
+		}
+		capturedBody = append([]byte(nil), body...)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"chat.completion","created":1,"model":"drop-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	override := `{"prompt_cache_key":"cache-from-override","temperature":0.2}`
+	drop := `["prompt_cache_key"]`
+	channel := &model.Channel{
+		Name:          "relay-param-drop",
+		Type:          outbound.OutboundTypeOpenAIChat,
+		Enabled:       true,
+		BaseUrls:      []model.BaseUrl{{URL: server.URL + "/v1"}},
+		Model:         "drop-model",
+		Keys:          []model.ChannelKey{{Enabled: true, ChannelKey: "drop-key"}},
+		ParamOverride: &override,
+		ParamDrop:     &drop,
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("ChannelCreate failed: %v", err)
+	}
+
+	group := &model.Group{Name: "relay-param-drop-group", Mode: model.GroupModeFailover}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&model.GroupItem{GroupID: group.ID, ChannelID: channel.ID, ModelName: "drop-model", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"relay-param-drop-group","messages":[{"role":"user","content":"hello"}],"prompt_cache_key":"cache-from-client"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	Handler(inbound.InboundTypeOpenAIChat, c)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected relay handler to succeed, got status %d body %s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(capturedBody, &payload); err != nil {
+		t.Fatalf("unmarshal upstream request failed: %v", err)
+	}
+	if _, ok := payload["prompt_cache_key"]; ok {
+		t.Fatalf("expected prompt_cache_key to be dropped, got %#v", payload["prompt_cache_key"])
+	}
+	if payload["temperature"] != 0.2 {
+		t.Fatalf("expected temperature override to remain, got %#v", payload["temperature"])
+	}
+}
+
 func TestRelayMetricsUsesResponseModelForCostLookup(t *testing.T) {
 	metrics := NewRelayMetrics(0, "alias-model", nil, &transformerModel.InternalLLMRequest{Model: "alias-model"})
 	metrics.StartTime = time.Now()
