@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { AlertTriangle, Calendar, Clock, Database, Download, FileArchive, ScrollText, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, Calendar, Clock, Database, Download, FileArchive, HardDrive, ScrollText, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -17,6 +17,7 @@ export function SettingData() {
     // 历史日志与统计持久化
     const logEnabled = useSettingToggle(SettingKey.RelayLogKeepEnabled);
     const keepPeriod = useSettingField(SettingKey.RelayLogKeepPeriod);
+    const maxSize = useSettingField(SettingKey.RelayLogMaxSizeMB);
     const statsInterval = useSettingField(SettingKey.StatsSaveInterval);
     const clearLogs = useClearLogs();
 
@@ -104,10 +105,25 @@ export function SettingData() {
             <SettingRow icon={Calendar} label={t('log.keepPeriod.label')}>
                 <Input
                     type="number"
+                    min={1}
+                    max={3650}
                     value={keepPeriod.value}
                     onChange={(e) => keepPeriod.setValue(e.target.value)}
                     onBlur={keepPeriod.save}
                     placeholder={t('log.keepPeriod.placeholder')}
+                    className="w-48 rounded-xl"
+                    disabled={!logEnabled.enabled}
+                />
+            </SettingRow>
+            <SettingRow icon={HardDrive} label={t('log.maxSize.label')}>
+                <Input
+                    type="number"
+                    min={0}
+                    max={102400}
+                    value={maxSize.value}
+                    onChange={(e) => maxSize.setValue(e.target.value)}
+                    onBlur={maxSize.save}
+                    placeholder={t('log.maxSize.placeholder')}
                     className="w-48 rounded-xl"
                     disabled={!logEnabled.enabled}
                 />

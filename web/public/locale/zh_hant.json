@@ -411,6 +411,10 @@
                 "label": "日誌保存天數",
                 "placeholder": "請輸入天數"
             },
+            "maxSize": {
+                "label": "日誌庫大小上限 (MB)",
+                "placeholder": "0 表示不限制"
+            },
             "clear": {
                 "label": "清空歷史日誌",
                 "button": "清空",

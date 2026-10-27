@@ -470,7 +470,7 @@ Octopus 支持 **OpenAI Chat / OpenAI Responses / Anthropic** 三种格式互相
 | **渠道同步** | 自动同步间隔（小时）、手动同步 |
 | **模型价格** | 自动更新间隔（小时）、手动更新（数据来自 models.dev） |
 | **站点自动化** | 站点自动同步间隔（小时）、自动签到间隔（小时）、手动全量同步 / 全量签到 |
-| **日志设置** | 启用历史日志、日志保存天数、清空历史日志 |
+| **日志设置** | 启用历史日志、日志保存天数、日志库大小上限、清空历史日志 |
 | **备份 / 恢复** | 导出（可选含日志/统计，含日志强制 ZIP）、导入（增量） |
 | **API 密钥** | 创建/管理 `sk-octopus-*`，可设置**每 Key RPM 限流**（见[第八章](#八第四步创建密钥并接入客户端)） |
 | **账户设置** | 修改用户名 / 密码 |
@@ -551,6 +551,15 @@ Octopus 支持 **OpenAI Chat / OpenAI Responses / Anthropic** 三种格式互相
   > ⚠️ **退出务必用正常方式**（`Ctrl+C` 或 `SIGTERM` / `docker stop`），**不要 `kill -9`**，否则内存里的统计会丢失。
 - **升级**：可放心升级；**日志数据量很大（几千条以上）时，升级会做数据库迁移，可能耗时几分钟**，属正常现象。更新前建议先在「设置 → 备份」导出。
 - **后台任务**：统计持久化、模型同步、价格更新、站点同步/签到等都在后台定时执行（周期可在设置里调）。
+- **日志库膨胀/压缩**：设置里的「日志库大小上限」默认 2GB，超过后会自动从最旧的日志开始删；保留天数建议不要设为 0（后端会强制按 7 天处理）。删除日志只会把页放回 SQLite 空闲列表，`data.db` 文件本身不会立刻变小。
+  - 日常清理可用 `./octopus clean`（按设置中的保留天数/容量上限执行）：`./octopus clean --dry-run` 预览、`./octopus clean --days 3` 临时覆盖天数、`./octopus clean --max-size-mb 1024 --vacuum` 清理并压缩、`./octopus clean --all --yes --vacuum` 清空全部日志并压缩。
+  - 需要回收磁盘时，先停止服务再执行 `./octopus compact`。Docker 部署可执行：
+  ```bash
+  docker compose stop octopus
+  docker compose run --rm --workdir /app --entrypoint /app/octopus octopus compact
+  docker compose start octopus
+  ```
+  `compact`/`clean --vacuum` 需要约等于当前 `data.db` 大小的临时磁盘空间。
 
 ---
 

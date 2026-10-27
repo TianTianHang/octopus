@@ -411,6 +411,10 @@
                 "label": "Log Retention (days)",
                 "placeholder": "Enter days"
             },
+            "maxSize": {
+                "label": "Log DB Size Limit (MB)",
+                "placeholder": "0 = unlimited"
+            },
             "clear": {
                 "label": "Clear History Logs",
                 "button": "Clear",

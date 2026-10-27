@@ -6,6 +6,20 @@ import (
 	"strconv"
 )
 
+// relay 日志保留天数的安全边界。
+// keep_period 为 0/负数会让清理逻辑退化成 no-op，历史上会导致 relay_logs
+// 无限增长（见 issue #300），因此这里把它限制在一个有意义的区间。
+const (
+	RelayLogDefaultKeepPeriodDays = 7
+	RelayLogMinKeepPeriodDays     = 1
+	RelayLogMaxKeepPeriodDays     = 3650
+
+	// relay_log_max_size_mb 是 relay_logs 所在数据库的活跃数据上限。
+	// 即便按天保留配错，也不会让 data.db 无限增长；0 表示只按天保留。
+	RelayLogDefaultMaxSizeMB = 2048
+	RelayLogMaxSizeMBLimit   = 102400
+)
+
 type SettingKey string
 
 const (
@@ -17,6 +31,7 @@ const (
 	SettingKeySiteCheckinInterval              SettingKey = "site_checkin_interval"                // 站点自动签到间隔(小时)
 	SettingKeyRelayLogKeepPeriod               SettingKey = "relay_log_keep_period"                // 日志保存时间范围(天)
 	SettingKeyRelayLogKeepEnabled              SettingKey = "relay_log_keep_enabled"               // 是否保留历史日志
+	SettingKeyRelayLogMaxSizeMB                SettingKey = "relay_log_max_size_mb"                // 日志数据库活跃数据上限(MB), 0 表示不限制
 	SettingKeyCORSAllowOrigins                 SettingKey = "cors_allow_origins"                   // 跨域白名单(逗号分隔, 如 "example.com,example2.com"). 为空不允许跨域, "*"允许所有
 	SettingKeyCircuitBreakerThreshold          SettingKey = "circuit_breaker_threshold"            // 熔断触发阈值（连续失败次数）
 	SettingKeyCircuitBreakerCooldown           SettingKey = "circuit_breaker_cooldown"             // 熔断基础冷却时间（秒）
@@ -58,6 +73,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeySiteCheckinInterval, Value: "24"},             // 默认24小时自动签到一次
 		{Key: SettingKeyRelayLogKeepPeriod, Value: "7"},               // 默认日志保存7天
 		{Key: SettingKeyRelayLogKeepEnabled, Value: "true"},           // 默认保留历史日志
+		{Key: SettingKeyRelayLogMaxSizeMB, Value: "2048"},             // 默认日志数据库活跃数据上限 2GB
 		{Key: SettingKeyCircuitBreakerThreshold, Value: "5"},          // 默认连续失败5次触发熔断
 		{Key: SettingKeyCircuitBreakerCooldown, Value: "60"},          // 默认基础冷却60秒
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"},      // 默认最大冷却600秒（10分钟）
@@ -86,13 +102,19 @@ func DefaultSettings() []Setting {
 func (s *Setting) Validate() error {
 	switch s.Key {
 	case SettingKeyModelInfoUpdateInterval, SettingKeySyncLLMInterval, SettingKeySiteSyncInterval,
-		SettingKeySiteCheckinInterval, SettingKeyRelayLogKeepPeriod,
+		SettingKeySiteCheckinInterval,
 		SettingKeyCircuitBreakerThreshold, SettingKeyCircuitBreakerCooldown, SettingKeyCircuitBreakerMaxCooldown:
 		_, err := strconv.Atoi(s.Value)
 		if err != nil {
 			return fmt.Errorf("setting value must be an integer")
 		}
 		return nil
+	case SettingKeyRelayLogKeepPeriod:
+		// 0 或负数会让日志清理失效，必须拒绝，避免 relay_logs 无限增长。
+		return validateIntRange(s.Value, RelayLogMinKeepPeriodDays, RelayLogMaxKeepPeriodDays)
+	case SettingKeyRelayLogMaxSizeMB:
+		// 0 表示只按天保留；正数作为数据库活跃数据的硬上限。
+		return validateIntRange(s.Value, 0, RelayLogMaxSizeMBLimit)
 	case SettingKeyOutlierWindowCapacity:
 		// 评估样本上限受环形缓冲物理容量约束（≤20，见 outlierwindow.physicalCap）。
 		return validateIntRange(s.Value, 1, 20)

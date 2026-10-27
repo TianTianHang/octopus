@@ -1,7 +1,9 @@
 package db
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 )
 
 var db *gorm.DB
+var sqlitePath string
 
 func InitDB(dbType, dsn string, debug bool) error {
 	var err error
@@ -25,6 +28,7 @@ func InitDB(dbType, dsn string, debug bool) error {
 
 	switch dbType {
 	case "sqlite":
+		sqlitePath = dsn
 		db, err = initSQLite(dsn, &gormConfig)
 	case "mysql":
 		db, err = initMySQL(dsn, &gormConfig)
@@ -138,11 +142,19 @@ func initSQLite(path string, config *gorm.Config) (*gorm.DB, error) {
 	params := []string{
 		"_pragma=journal_mode(WAL)",
 		"_pragma=synchronous(NORMAL)",
-		"_pragma=busy_timeout(5000)",
+		// relay log writer / cleanup 会和请求路径抢同一个 SQLite 写连接，
+		// 5s 在 GB 级 relay_logs 上很容易触发 SQLITE_BUSY，导致清理批次失败后
+		// 又要等下一轮任务。30s 给批量写入/删除留出足够的重试窗口。
+		"_pragma=busy_timeout(30000)",
 		"_pragma=foreign_keys(ON)",
 		"_pragma=cache_size(-10000)",
 		"_pragma=mmap_size(268435456)",
 		"_pragma=temp_store(MEMORY)",
+		// 新库启用增量 vacuum，删除旧日志后可以把空闲页还给文件系统。
+		// 已有库需要执行一次 `octopus compact` 才会切换到该模式。
+		"_pragma=auto_vacuum(INCREMENTAL)",
+		// 限制 WAL 文件大小，避免 checkpoint 不及时时 -wal 也无限膨胀。
+		"_pragma=journal_size_limit(67108864)",
 	}
 	return gorm.Open(sqlite.Open(path+"?"+strings.Join(params, "&")), config)
 }
@@ -170,6 +182,116 @@ func Close() error {
 
 func GetDB() *gorm.DB {
 	return db
+}
+
+// Dialect 返回当前数据库方言（sqlite/mysql/postgres），未初始化时返回空串。
+func Dialect() string {
+	if db == nil || db.Dialector == nil {
+		return ""
+	}
+	return db.Dialector.Name()
+}
+
+// Path 返回当前 SQLite 数据库文件路径；非 SQLite 方言返回空串。
+func Path() string {
+	if Dialect() != "sqlite" {
+		return ""
+	}
+	return sqlitePath
+}
+
+// LiveDataSize 估算 SQLite 主库当前“有效数据”占用的字节数。
+// page_count 包含空闲页，扣除 freelist_count 后才是仍在使用的页面；
+// 用它判断是否需要按容量上限继续裁剪 relay_logs，而不是看文件大小
+// （删除行后文件不会立即变小，看文件大小会误判）。
+// 非 SQLite 方言返回 0，调用方应跳过容量裁剪。
+func LiveDataSize(ctx context.Context) (int64, error) {
+	if Dialect() != "sqlite" {
+		return 0, nil
+	}
+	pageCount, err := sqlitePragmaInt(ctx, "page_count")
+	if err != nil {
+		return 0, fmt.Errorf("read sqlite page_count: %w", err)
+	}
+	freePages, err := sqlitePragmaInt(ctx, "freelist_count")
+	if err != nil {
+		return 0, fmt.Errorf("read sqlite freelist_count: %w", err)
+	}
+	pageSize, err := sqlitePragmaInt(ctx, "page_size")
+	if err != nil {
+		return 0, fmt.Errorf("read sqlite page_size: %w", err)
+	}
+	livePages := pageCount - freePages
+	if livePages < 0 {
+		livePages = 0
+	}
+	return livePages * pageSize, nil
+}
+
+func sqlitePragmaInt(ctx context.Context, name string) (int64, error) {
+	var value int64
+	row := db.WithContext(ctx).Raw("PRAGMA " + name).Row()
+	if err := row.Scan(&value); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+// IncrementalVacuum 在 auto_vacuum=INCREMENTAL 的 SQLite 库上把空闲页归还文件系统。
+// 老库的 auto_vacuum=0，此时该 PRAGMA 是 no-op，需要执行一次完整的 Vacuum 转换。
+func IncrementalVacuum(ctx context.Context) error {
+	if Dialect() != "sqlite" {
+		return nil
+	}
+	mode, err := sqlitePragmaInt(ctx, "auto_vacuum")
+	if err != nil {
+		return fmt.Errorf("read sqlite auto_vacuum: %w", err)
+	}
+	if mode != 2 {
+		return nil
+	}
+	return db.WithContext(ctx).Exec("PRAGMA incremental_vacuum").Error
+}
+
+// Vacuum 重建 SQLite 数据库文件，回收已删除日志占用的磁盘空间。
+// 这是一次性维护操作，执行期间会锁住数据库，且需要约等于当前库大小的临时空间。
+func Vacuum(ctx context.Context) error {
+	if Dialect() != "sqlite" {
+		return fmt.Errorf("compact is only supported for sqlite")
+	}
+	// 老库的 auto_vacuum 是 0；仅在连接上设置该 pragma 不会改变已有库，
+	// 必须显式设置后再 VACUUM，VACUUM 会按新设置重建文件。
+	if err := db.WithContext(ctx).Exec("PRAGMA auto_vacuum=INCREMENTAL").Error; err != nil {
+		return fmt.Errorf("enable incremental auto_vacuum failed: %w", err)
+	}
+	// 先 checkpoint，避免 WAL 中的页让 VACUUM 复制额外数据。
+	if err := db.WithContext(ctx).Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error; err != nil {
+		return fmt.Errorf("wal checkpoint failed: %w", err)
+	}
+	if err := db.WithContext(ctx).Exec("VACUUM").Error; err != nil {
+		return fmt.Errorf("vacuum failed: %w", err)
+	}
+	// VACUUM 本身会写入 WAL；再 checkpoint 一次，命令退出前文件大小才是真实的，
+	// 也避免留下一个和主库等大的 -wal 文件。
+	if err := db.WithContext(ctx).Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error; err != nil {
+		return fmt.Errorf("post-vacuum wal checkpoint failed: %w", err)
+	}
+	return nil
+}
+
+// FileSize 返回数据库主文件及 WAL/SHM 附属文件的字节数。
+func FileSize(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	var total int64
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+	}
+	return total
 }
 
 // ensureRelayLogColumnsSQLite 用 GORM 的 AddColumn 给 relay_logs 补齐 model 里

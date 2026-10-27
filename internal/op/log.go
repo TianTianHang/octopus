@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,11 @@ const (
 	relayLogCleanupBatchSize = 1000
 	relayLogCleanupBatchWait = 30 * time.Millisecond
 	relayLogWriterMaxBatches = 25
+
+	// SQLite 在批量删除/写入时可能短暂返回 SQLITE_BUSY。清理任务不能因此
+	// 直接放弃到下一小时，否则高流量下会持续积累旧日志。
+	relayLogCleanupRetryAttempts = 3
+	relayLogCleanupRetryBaseWait = 250 * time.Millisecond
 )
 
 var relayLogPending = make([]model.RelayLog, 0, relayLogBatchSize)
@@ -325,14 +331,50 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 	}
 
 	if enabled {
-		if err := RelayLogFlushPending(ctx); err != nil {
-			return err
-		}
-		return relayLogCleanup(ctx)
+		return RelayLogMaintenance(ctx)
 	}
 
 	trimRelayLogRecent()
 	return nil
+}
+
+// RelayLogMaintenance 在有限步数内排空待写队列，然后执行保留期/容量清理。
+// 这里刻意不调用 RelayLogFlushPending：它会一直循环到队列为空，在持续高流量
+// 下可能永远返回不了，导致后面的 relayLogCleanup 永远不执行——这正是
+// relay_logs 无限增长的根因之一。剩余日志继续由后台 writer 排空。
+func RelayLogMaintenance(ctx context.Context) error {
+	if err := relayLogDrainPending(ctx, relayLogWriterMaxBatches); err != nil {
+		// 清理比写入更重要：即使这一轮 flush 失败，也继续尝试删除过期日志。
+		log.Warnf("relay log flush before cleanup failed: %v", err)
+	}
+	return relayLogCleanup(ctx)
+}
+
+// relayLogKeepPeriodDays 返回有效的保留天数。
+// 配置缺失、非法或 <=0 时回退到默认 7 天，而不是禁用清理。
+func relayLogKeepPeriodDays() int {
+	keepPeriod, err := SettingGetInt(model.SettingKeyRelayLogKeepPeriod)
+	if err != nil {
+		log.Warnf("failed to read relay_log_keep_period: %v, using default %d days", err, model.RelayLogDefaultKeepPeriodDays)
+		return model.RelayLogDefaultKeepPeriodDays
+	}
+	if keepPeriod < model.RelayLogMinKeepPeriodDays {
+		log.Warnf("relay_log_keep_period=%d is invalid, using default %d days", keepPeriod, model.RelayLogDefaultKeepPeriodDays)
+		return model.RelayLogDefaultKeepPeriodDays
+	}
+	if keepPeriod > model.RelayLogMaxKeepPeriodDays {
+		return model.RelayLogMaxKeepPeriodDays
+	}
+	return keepPeriod
+}
+
+// relayLogMaxSizeBytes 返回日志数据库活跃数据的硬上限；0 表示不限制。
+func relayLogMaxSizeBytes() int64 {
+	maxSizeMB, err := SettingGetInt(model.SettingKeyRelayLogMaxSizeMB)
+	if err != nil || maxSizeMB <= 0 {
+		return 0
+	}
+	return int64(maxSizeMB) << 20
 }
 
 func trimRelayLogRecent() {
@@ -344,63 +386,359 @@ func trimRelayLogRecent() {
 	relayLogRecentLock.Unlock()
 }
 
+var relayLogTimeIndexMissingWarn sync.Once
+
+func relayLogTimeIndexReady() bool {
+	dbConn := db.GetDB()
+	if dbConn == nil {
+		return false
+	}
+	return dbConn.Migrator().HasIndex("relay_logs", "idx_relay_logs_time_id")
+}
+
+// RelayLogCleanupOptions 是命令行/手动清理的覆盖参数。
+// KeepPeriodDays <=0 表示使用数据库里的 relay_log_keep_period；
+// MaxSizeMB <0 表示使用 relay_log_max_size_mb，0 表示本次不限制容量。
+type RelayLogCleanupOptions struct {
+	KeepPeriodDays int
+	MaxSizeMB      int
+	DryRun         bool
+}
+
+type RelayLogCleanupResult struct {
+	KeepPeriodDays int
+	MaxSizeBytes   int64
+	ExpiredRows    int64
+	ExpiredBatches int
+	TrimmedRows    int64
+	DeletedRows    int64
+	DryRun         bool
+	TimeIndexReady bool
+}
+
+// RelayLogCleanupWithOptions 执行一次日志清理，供后台任务和 CLI 共用。
+// 与后台任务不同，它不检查 relay_log_keep_enabled：手动清理是显式操作，
+// 即使已经关闭历史日志，也应该能清掉旧数据。
+func RelayLogCleanupWithOptions(ctx context.Context, opts RelayLogCleanupOptions) (RelayLogCleanupResult, error) {
+	result := RelayLogCleanupResult{DryRun: opts.DryRun}
+	dbConn := db.GetDB()
+	if dbConn == nil {
+		return result, fmt.Errorf("db is nil")
+	}
+	if opts.KeepPeriodDays > model.RelayLogMaxKeepPeriodDays {
+		return result, fmt.Errorf("keep period days must be <= %d", model.RelayLogMaxKeepPeriodDays)
+	}
+	if opts.MaxSizeMB > model.RelayLogMaxSizeMBLimit {
+		return result, fmt.Errorf("max size mb must be <= %d", model.RelayLogMaxSizeMBLimit)
+	}
+
+	keepPeriod := opts.KeepPeriodDays
+	if keepPeriod <= 0 {
+		keepPeriod = relayLogKeepPeriodDays()
+	}
+	if keepPeriod < model.RelayLogMinKeepPeriodDays {
+		keepPeriod = model.RelayLogDefaultKeepPeriodDays
+	}
+	result.KeepPeriodDays = keepPeriod
+
+	if opts.MaxSizeMB < 0 {
+		result.MaxSizeBytes = relayLogMaxSizeBytes()
+	} else {
+		result.MaxSizeBytes = int64(opts.MaxSizeMB) << 20
+	}
+
+	cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
+	session := dbConn.WithContext(ctx)
+
+	// 启动时清理任务和 async 建索引任务是并行的。没有 (time,id) 索引时，
+	// 按 time 删除会全表扫描 GB 级 relay_logs，既慢又可能把内存打满；
+	// 先跳过按天清理，但下面的容量上限仍然会用主键继续兜底。
+	result.TimeIndexReady = relayLogTimeIndexReady()
+	if result.TimeIndexReady {
+		expiredRows, expiredBatches, err := relayLogPurgeExpiredWithOptions(ctx, session, cutoffTime, opts.DryRun)
+		if err != nil {
+			return result, err
+		}
+		result.ExpiredRows = expiredRows
+		result.ExpiredBatches = expiredBatches
+	} else {
+		relayLogTimeIndexMissingWarn.Do(func() {
+			log.Warnf("relay_log.cleanup skipped time-based purge until idx_relay_logs_time_id is ready; size cap remains active")
+		})
+	}
+
+	trimmedRows, err := relayLogTrimToMaxSizeWithLimit(ctx, session, result.MaxSizeBytes, opts.DryRun)
+	if err != nil {
+		return result, err
+	}
+	result.TrimmedRows = trimmedRows
+	result.DeletedRows = result.ExpiredRows + result.TrimmedRows
+	return result, nil
+}
+
 func relayLogCleanup(ctx context.Context) error {
-	keepPeriod, err := SettingGetInt(model.SettingKeyRelayLogKeepPeriod)
+	start := time.Now()
+	result, err := RelayLogCleanupWithOptions(ctx, RelayLogCleanupOptions{MaxSizeMB: -1})
 	if err != nil {
 		return err
 	}
 
-	if keepPeriod <= 0 {
-		return nil
+	if result.DeletedRows > 0 {
+		log.Infow("relay_log.cleanup",
+			"deleted_rows", result.DeletedRows,
+			"expired_rows", result.ExpiredRows,
+			"trimmed_rows", result.TrimmedRows,
+			"batch_count", result.ExpiredBatches,
+			"keep_period_days", result.KeepPeriodDays,
+			"duration", time.Since(start).String(),
+		)
+		// 删除行只会把页放进 freelist，文件本身不会自动变小。
+		// 新库启用了 auto_vacuum=INCREMENTAL，这里把空闲页真正释放掉。
+		if err := db.IncrementalVacuum(ctx); err != nil {
+			log.Warnf("relay_log.cleanup incremental vacuum failed: %v", err)
+		}
 	}
+	relayLogWarnIfCompactNeeded(ctx)
+	return nil
+}
 
-	cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
-	start := time.Now()
+// RelayLogCount 返回 relay_logs 当前行数，供 CLI 展示清理前后差异。
+func RelayLogCount(ctx context.Context) (int64, error) {
+	dbConn := db.GetDB()
+	if dbConn == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
+	var count int64
+	err := dbConn.WithContext(ctx).Model(&model.RelayLog{}).Count(&count).Error
+	return count, err
+}
+
+// relayLogPurgeExpired 按 time 删除超过保留期的日志，返回删除行数和批次数。
+func relayLogPurgeExpired(ctx context.Context, dbConn *gorm.DB, cutoffTime int64) (int64, int, error) {
+	return relayLogPurgeExpiredWithOptions(ctx, dbConn, cutoffTime, false)
+}
+
+func relayLogPurgeExpiredWithOptions(ctx context.Context, dbConn *gorm.DB, cutoffTime int64, dryRun bool) (int64, int, error) {
+	if dryRun {
+		var count int64
+		if err := relayLogDoWithRetry(ctx, func() error {
+			return dbConn.Model(&model.RelayLog{}).Where("time < ?", cutoffTime).Count(&count).Error
+		}); err != nil {
+			return 0, 0, err
+		}
+		return count, 0, nil
+	}
 	deletedRows := int64(0)
 	batchCount := 0
-	dbConn := db.GetDB().WithContext(ctx)
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return deletedRows, batchCount, ctx.Err()
 		default:
 		}
 
 		var ids []int64
-		if err := dbConn.Model(&model.RelayLog{}).
-			Where("time < ?", cutoffTime).
-			Order("time ASC").
-			Order("id ASC").
-			Limit(relayLogCleanupBatchSize).
-			Pluck("id", &ids).Error; err != nil {
-			return err
+		if err := relayLogDoWithRetry(ctx, func() error {
+			ids = nil
+			return dbConn.Model(&model.RelayLog{}).
+				Where("time < ?", cutoffTime).
+				Order("time ASC").
+				Order("id ASC").
+				Limit(relayLogCleanupBatchSize).
+				Pluck("id", &ids).Error
+		}); err != nil {
+			return deletedRows, batchCount, err
 		}
 		if len(ids) == 0 {
-			break
+			return deletedRows, batchCount, nil
 		}
-		result := dbConn.Where("id IN ?", ids).Unscoped().Delete(&model.RelayLog{})
-		if result.Error != nil {
-			return result.Error
+		var affected int64
+		if err := relayLogDoWithRetry(ctx, func() error {
+			result := dbConn.Where("id IN ?", ids).Unscoped().Delete(&model.RelayLog{})
+			if result.Error != nil {
+				return result.Error
+			}
+			affected = result.RowsAffected
+			return nil
+		}); err != nil {
+			return deletedRows, batchCount, err
 		}
-		deletedRows += result.RowsAffected
+		deletedRows += affected
 		batchCount++
 		if len(ids) < relayLogCleanupBatchSize {
-			break
+			return deletedRows, batchCount, nil
 		}
-		if relayLogCleanupBatchWait > 0 {
-			timer := time.NewTimer(relayLogCleanupBatchWait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
+		if relayLogCleanupBatchWait > 0 && !sleepWithCtx(ctx, relayLogCleanupBatchWait) {
+			return deletedRows, batchCount, ctx.Err()
+		}
+	}
+}
+
+var relayLogCompactWarn sync.Once
+
+// relayLogWarnIfCompactNeeded 在“文件很大但有效数据很少”时提示用户执行 compact。
+// 老库 auto_vacuum=0，删除行后文件不会自己缩小；只靠日志清理无法把 15GB 还回去。
+func relayLogWarnIfCompactNeeded(ctx context.Context) {
+	if db.Dialect() != "sqlite" {
+		return
+	}
+	path := db.Path()
+	if path == "" {
+		return
+	}
+	fileSize := db.FileSize(path)
+	liveSize, err := db.LiveDataSize(ctx)
+	if err != nil {
+		return
+	}
+	if fileSize > 1<<30 && fileSize > liveSize*2 {
+		relayLogCompactWarn.Do(func() {
+			log.Warnf("data.db is %d bytes but only %d bytes are live; run `octopus compact` to reclaim disk space", fileSize, liveSize)
+		})
+	}
+}
+
+// relayLogTrimToMaxSize 在日志数据库活跃数据超过 relay_log_max_size_mb 时，
+// 从最旧的日志开始删除，直到低于上限或 relay_logs 已空。
+// 按活跃页而不是文件大小计算，避免删除后文件尚未收缩时反复空转。
+func relayLogTrimToMaxSize(ctx context.Context, dbConn *gorm.DB) (int64, error) {
+	return relayLogTrimToMaxSizeWithLimit(ctx, dbConn, relayLogMaxSizeBytes(), false)
+}
+
+func relayLogTrimToMaxSizeWithLimit(ctx context.Context, dbConn *gorm.DB, maxBytes int64, dryRun bool) (int64, error) {
+	if maxBytes <= 0 || db.Dialect() != "sqlite" {
+		return 0, nil
+	}
+
+	if dryRun {
+		liveBytes, err := db.LiveDataSize(ctx)
+		if err != nil || liveBytes <= maxBytes {
+			return 0, err
+		}
+		var totalRows int64
+		if err := relayLogDoWithRetry(ctx, func() error {
+			return dbConn.Model(&model.RelayLog{}).Count(&totalRows).Error
+		}); err != nil {
+			return 0, err
+		}
+		if totalRows == 0 {
+			return 0, nil
+		}
+		avgRowBytes := liveBytes / totalRows
+		if avgRowBytes < 1 {
+			avgRowBytes = 1
+		}
+		return (liveBytes - maxBytes) / avgRowBytes, nil
+	}
+
+	deleted := int64(0)
+	var totalRows int64
+	var estimatedAvgRowBytes int64
+	counted := false
+	for {
+		liveBytes, err := db.LiveDataSize(ctx)
+		if err != nil {
+			return deleted, err
+		}
+		if liveBytes <= maxBytes {
+			return deleted, nil
+		}
+
+		if !counted {
+			counted = true
+			if err := relayLogDoWithRetry(ctx, func() error {
+				return dbConn.Model(&model.RelayLog{}).Count(&totalRows).Error
+			}); err != nil {
+				log.Warnf("relay_log size trim count failed: %v", err)
+			} else if totalRows > 0 && liveBytes > 0 {
+				estimatedAvgRowBytes = liveBytes / totalRows
+				if estimatedAvgRowBytes < 1 {
+					estimatedAvgRowBytes = 1
+				}
 			}
 		}
+
+		// 按估算的单行大小决定这一批删多少，避免固定 1000 行在
+		// 小表上直接删过头，也避免在大表上每批删得太少。
+		limit := relayLogCleanupBatchSize
+		if estimatedAvgRowBytes > 0 {
+			excess := liveBytes - maxBytes
+			rowsToDelete := excess / estimatedAvgRowBytes
+			if rowsToDelete < 1 {
+				rowsToDelete = 1
+			}
+			if rowsToDelete < int64(limit) {
+				limit = int(rowsToDelete)
+			}
+		}
+
+		var ids []int64
+		if err := relayLogDoWithRetry(ctx, func() error {
+			ids = nil
+			return dbConn.Model(&model.RelayLog{}).
+				Order("id ASC").
+				Limit(limit).
+				Pluck("id", &ids).Error
+		}); err != nil {
+			return deleted, err
+		}
+		if len(ids) == 0 {
+			log.Warnf("relay_log database live size %d exceeds cap %d but relay_logs is empty", liveBytes, maxBytes)
+			return deleted, nil
+		}
+
+		var affected int64
+		if err := relayLogDoWithRetry(ctx, func() error {
+			result := dbConn.Where("id IN ?", ids).Unscoped().Delete(&model.RelayLog{})
+			if result.Error != nil {
+				return result.Error
+			}
+			affected = result.RowsAffected
+			return nil
+		}); err != nil {
+			return deleted, err
+		}
+		deleted += affected
+		if affected == 0 {
+			return deleted, nil
+		}
+		if relayLogCleanupBatchWait > 0 && !sleepWithCtx(ctx, relayLogCleanupBatchWait) {
+			return deleted, ctx.Err()
+		}
 	}
-	if deletedRows > 0 {
-		log.Debugw("relay_log.cleanup", "deleted_rows", deletedRows, "batch_count", batchCount, "duration", time.Since(start).String())
+}
+
+// relayLogDoWithRetry 对 SQLite 的瞬时 SQLITE_BUSY 做短重试。
+// 之前的实现一旦遇到 database is locked 就直接放弃整轮清理，
+// 要等下一个定时周期，日志量在大流量下会持续堆积。
+func relayLogDoWithRetry(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 0; attempt < relayLogCleanupRetryAttempts; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if err = fn(); err == nil {
+			return nil
+		}
+		if !isRelayLogBusyError(err) || attempt == relayLogCleanupRetryAttempts-1 {
+			return err
+		}
+		wait := time.Duration(attempt+1) * relayLogCleanupRetryBaseWait
+		if !sleepWithCtx(ctx, wait) {
+			return ctx.Err()
+		}
 	}
-	return nil
+	return err
+}
+
+func isRelayLogBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked") ||
+		strings.Contains(message, "sqlite_busy")
 }
 
 type RelayLogStatusFilter string
@@ -1014,8 +1352,9 @@ func relayLogSearchMode(filter RelayLogListFilter) string {
 }
 
 func RelayLogClear(ctx context.Context) error {
+	// 只在“取快照 + 清空内存队列”期间持有 flush 锁，避免删除 GB 级日志时
+	// 长时间阻塞请求路径上的 RelayLogAdd。
 	relayLogFlushLock.Lock()
-	defer relayLogFlushLock.Unlock()
 
 	relayLogPendingLock.Lock()
 	relayLogPending = make([]model.RelayLog, 0, relayLogBatchSize)
@@ -1026,10 +1365,23 @@ func RelayLogClear(ctx context.Context) error {
 	relayLogRecent = make([]model.RelayLog, 0, relayLogRecentMaxSize)
 	relayLogRecentLock.Unlock()
 
+	var maxID int64
+	dbConn := db.GetDB().WithContext(ctx)
+	if err := relayLogDoWithRetry(ctx, func() error {
+		return dbConn.Model(&model.RelayLog{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error
+	}); err != nil {
+		relayLogFlushLock.Unlock()
+		return err
+	}
+	relayLogFlushLock.Unlock()
+
+	if maxID == 0 {
+		return nil
+	}
+
 	start := time.Now()
 	deletedRows := int64(0)
 	batchCount := 0
-	dbConn := db.GetDB().WithContext(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1037,37 +1389,44 @@ func RelayLogClear(ctx context.Context) error {
 		default:
 		}
 		var ids []int64
-		if err := dbConn.Model(&model.RelayLog{}).
-			Order("time ASC").
-			Order("id ASC").
-			Limit(relayLogCleanupBatchSize).
-			Pluck("id", &ids).Error; err != nil {
+		if err := relayLogDoWithRetry(ctx, func() error {
+			ids = nil
+			return dbConn.Model(&model.RelayLog{}).
+				Where("id <= ?", maxID).
+				Order("id ASC").
+				Limit(relayLogCleanupBatchSize).
+				Pluck("id", &ids).Error
+		}); err != nil {
 			return err
 		}
 		if len(ids) == 0 {
 			break
 		}
-		result := dbConn.Where("id IN ?", ids).Unscoped().Delete(&model.RelayLog{})
-		if result.Error != nil {
-			return result.Error
+		var affected int64
+		if err := relayLogDoWithRetry(ctx, func() error {
+			result := dbConn.Where("id IN ?", ids).Unscoped().Delete(&model.RelayLog{})
+			if result.Error != nil {
+				return result.Error
+			}
+			affected = result.RowsAffected
+			return nil
+		}); err != nil {
+			return err
 		}
-		deletedRows += result.RowsAffected
+		deletedRows += affected
 		batchCount++
 		if len(ids) < relayLogCleanupBatchSize {
 			break
 		}
-		if relayLogCleanupBatchWait > 0 {
-			timer := time.NewTimer(relayLogCleanupBatchWait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
+		if relayLogCleanupBatchWait > 0 && !sleepWithCtx(ctx, relayLogCleanupBatchWait) {
+			return ctx.Err()
 		}
 	}
 	if deletedRows > 0 {
-		log.Debugw("relay_log.clear", "deleted_rows", deletedRows, "batch_count", batchCount, "duration", time.Since(start).String())
+		log.Infow("relay_log.clear", "deleted_rows", deletedRows, "batch_count", batchCount, "duration", time.Since(start).String())
+		if err := db.IncrementalVacuum(ctx); err != nil {
+			log.Warnf("relay_log.clear incremental vacuum failed: %v", err)
+		}
 	}
 	return nil
 }
