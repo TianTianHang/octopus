@@ -4,6 +4,8 @@
 生成 internal/price/presets.go 文件
 """
 
+from __future__ import annotations
+
 import json
 import re
 import urllib.request
@@ -146,11 +148,24 @@ def generate_entry(model_id: str, cost: dict) -> str:
     return f'\t"{model_id}": {{Input: {input_price}, Output: {output_price}, CacheRead: {cache_read}, CacheWrite: {cache_write}}},'
 
 
+def add_entry(entries: dict[str, str], model_id: str, cost: dict) -> bool:
+    """加入一条唯一模型记录；重复 id/别名只保留第一次出现的价格。
+
+    models.dev 的不同 provider 可能包含同名模型，Claude 自动别名也可能与
+    其他模型 id 撞车。Go map literal 不允许重复 key，生成前必须去重。
+    """
+    model_id = model_id.strip().lower()
+    if not model_id or model_id in entries:
+        return False
+    entries[model_id] = generate_entry(model_id, cost)
+    return True
+
+
 def main():
     print(f"Fetching price data from {LLM_PRICE_URL}...")
     raw_price = fetch_price_data()
     
-    entries = []
+    entries: dict[str, str] = {}
     model_count = 0
     
     for provider in PROVIDERS:
@@ -168,9 +183,9 @@ def main():
             if not model_id:
                 continue
             
-            # 添加原始模型
-            entries.append(generate_entry(model_id, cost))
-            provider_count += 1
+            # 添加原始模型（按 id 去重）
+            if add_entry(entries, model_id, cost):
+                provider_count += 1
             
             # 收集所有别名
             aliases = []
@@ -182,19 +197,20 @@ def main():
             if model_id in MODEL_ALIASES:
                 aliases.extend(MODEL_ALIASES[model_id])
             
-            # 添加别名 (去重)
+            # 添加别名 (set 只去掉本轮别名重复，跨 provider 仍需 add_entry 去重)
             for alias in set(aliases):
-                entries.append(generate_entry(alias.lower(), cost))
-                provider_count += 1
+                if add_entry(entries, alias, cost):
+                    provider_count += 1
             
         print(f"  {provider}: {provider_count} models")
         model_count += provider_count
     
-    # 生成 Go 文件内容
+    # 生成 Go 文件内容。排序让生成结果稳定，也避免 map literal 中重复 key。
     update_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    sorted_entries = [entries[key] for key in sorted(entries)]
     content = PRESETS_GO_TEMPLATE.format(
         update_time=update_time,
-        entries="\n".join(entries),
+        entries="\n".join(sorted_entries),
     )
     
     # 写入文件
