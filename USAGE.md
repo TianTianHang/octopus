@@ -552,7 +552,7 @@ First confirm the **upstream provider itself** is configured correctly (the same
 - **Upgrades**: Safe to upgrade. **When log data is large (thousands of entries or more), upgrades run database migrations that may take several minutes** — this is normal. Recommend exporting via "Settings → Backup" before updating.
 - **Background tasks**: Statistics persistence, model sync, price updates, site sync/check-in all run as scheduled background tasks (intervals configurable in Settings).
 - **Log DB growth / compaction**: The "Log DB Size Limit" setting defaults to 2GB; once exceeded, the oldest logs are deleted automatically. Avoid setting retention days to 0 (the backend treats it as 7 days). Deleting rows only returns pages to SQLite's freelist — `data.db` does not shrink immediately.
-  - Use `./octopus clean` for routine cleanup with the configured retention/size limits: `./octopus clean --dry-run` to preview, `./octopus clean --days 3` to override retention, `./octopus clean --max-size-mb 1024 --vacuum` to clean and compact, `./octopus clean --all --yes --vacuum` to delete all logs and compact.
+  - Use `./octopus clean` for routine cleanup with the configured retention/size limits: `./octopus clean --dry-run` to preview, `./octopus clean --days 3` to override retention, `./octopus clean --max-size-mb 1024 --vacuum` to clean and compact, `./octopus clean --all --yes --vacuum` to delete all logs and compact. `--vacuum` also reclaims free pages even when `relay_logs` is already empty.
   - To reclaim disk, stop the service and run `./octopus compact`. For Docker:
   ```bash
   docker compose stop octopus

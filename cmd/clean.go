@@ -98,13 +98,13 @@ var cleanCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		log.Infof("relay logs before cleanup: rows=%d db_size=%s", beforeRows, databaseSizeLabel(path))
-		if beforeRows == 0 {
-			log.Infof("nothing to clean")
-			return
-		}
 
 		deletedRows := int64(0)
-		if cleanAll {
+		if beforeRows == 0 {
+			// 行数为 0 不代表文件没有可回收空间：之前的删除可能只在
+			// SQLite freelist 里留下大量空闲页。--vacuum 必须继续执行。
+			log.Infof("no relay log rows to delete")
+		} else if cleanAll {
 			if cleanDryRun {
 				log.Infof("[dry-run] would delete all %d relay logs", beforeRows)
 				return
@@ -143,6 +143,7 @@ var cleanCmd = &cobra.Command{
 			}
 		}
 		if cleanVacuum {
+			// 即使本次没有删除行，也允许对历史 free pages 做一次完整压缩。
 			if err := db.Vacuum(ctx); err != nil {
 				log.Errorf("database vacuum failed: %v", err)
 				os.Exit(1)
@@ -156,7 +157,11 @@ var cleanCmd = &cobra.Command{
 		}
 		log.Infof("relay logs after cleanup: rows=%d db_size=%s", afterRows, databaseSizeLabel(path))
 		if !cleanVacuum {
-			log.Infof("deleted rows are still held in SQLite free pages; run `octopus clean --vacuum` or `octopus compact` to shrink data.db")
+			if deletedRows > 0 {
+				log.Infof("deleted rows are still held in SQLite free pages; run `octopus clean --vacuum` or `octopus compact` to shrink data.db")
+			} else {
+				log.Infof("db_size may include SQLite free pages from previous deletions; run `octopus clean --vacuum` or `octopus compact` to reclaim disk space")
+			}
 		}
 	},
 }

@@ -552,7 +552,7 @@ Octopus 支持 **OpenAI Chat / OpenAI Responses / Anthropic** 三种格式互相
 - **升级**：可放心升级；**日志数据量很大（几千条以上）时，升级会做数据库迁移，可能耗时几分钟**，属正常现象。更新前建议先在「设置 → 备份」导出。
 - **后台任务**：统计持久化、模型同步、价格更新、站点同步/签到等都在后台定时执行（周期可在设置里调）。
 - **日志库膨胀/压缩**：设置里的「日志库大小上限」默认 2GB，超过后会自动从最旧的日志开始删；保留天数建议不要设为 0（后端会强制按 7 天处理）。删除日志只会把页放回 SQLite 空闲列表，`data.db` 文件本身不会立刻变小。
-  - 日常清理可用 `./octopus clean`（按设置中的保留天数/容量上限执行）：`./octopus clean --dry-run` 预览、`./octopus clean --days 3` 临时覆盖天数、`./octopus clean --max-size-mb 1024 --vacuum` 清理并压缩、`./octopus clean --all --yes --vacuum` 清空全部日志并压缩。
+  - 日常清理可用 `./octopus clean`（按设置中的保留天数/容量上限执行）：`./octopus clean --dry-run` 预览、`./octopus clean --days 3` 临时覆盖天数、`./octopus clean --max-size-mb 1024 --vacuum` 清理并压缩、`./octopus clean --all --yes --vacuum` 清空全部日志并压缩。 即使 `relay_logs` 已经为空，`--vacuum` 也会压缩历史删除留下的空闲页。
   - 需要回收磁盘时，先停止服务再执行 `./octopus compact`。Docker 部署可执行：
   ```bash
   docker compose stop octopus
