@@ -12,6 +12,9 @@ import (
 
 var userCache model.User
 
+// maxPasswordBytes 是 bcrypt 接受的密码长度上限, 超出部分不会被计入哈希。
+const maxPasswordBytes = 72
+
 func UserInit() error {
 	if err := db.GetDB().First(&userCache).Error; err == nil {
 		return nil
@@ -42,6 +45,26 @@ func UserChangePassword(oldPassword, newPassword string) error {
 		return fmt.Errorf("failed to update password: %w", err)
 	}
 
+	return nil
+}
+
+// UserSetPassword 直接覆盖当前密码, 不校验旧密码。
+// 仅供忘记密码时的 CLI 恢复命令使用: 它绕过本人身份校验, 因此不得暴露到 HTTP 接口。
+// 新密码按 bcrypt 上限校验长度: bcrypt 只取前 72 字节, 超长会被静默截断。
+func UserSetPassword(newPassword string) error {
+	if newPassword == "" {
+		return fmt.Errorf("password must not be empty")
+	}
+	if len(newPassword) > maxPasswordBytes {
+		return fmt.Errorf("password must be at most %d bytes", maxPasswordBytes)
+	}
+	userCache.Password = newPassword
+	if err := userCache.HashPassword(); err != nil {
+		return fmt.Errorf("failed to hash new password: %w", err)
+	}
+	if err := db.GetDB().Model(&userCache).Update("password", userCache.Password).Error; err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
 	return nil
 }
 
