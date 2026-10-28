@@ -79,6 +79,9 @@ func TestParseLLMPriceKeepsOnlyTextOutputAndOwnFamilies(t *testing.T) {
 		}},
 		"zhipuai": {"models": {
 			"glm-5": {"id": "glm-5", "family": "glm", "modalities": {"output": ["text"]}, "cost": {"input": 0.7}}
+		}},
+		"xiaomi": {"models": {
+			"mimo-v2.6-pro": {"id": "mimo-v2.6-pro", "family": "mimo", "modalities": {"output": ["text"]}, "cost": {"input": 1.1}}
 		}}
 	}`)
 
@@ -94,7 +97,7 @@ func TestParseLLMPriceKeepsOnlyTextOutputAndOwnFamilies(t *testing.T) {
 		}
 	}
 	// 嵌入模型与文本模型一样按 token 计价, 保留。
-	for _, kept := range []string{"gpt-4o", "text-embedding-3-small", "gemini-embedding-001", "qwen-max"} {
+	for _, kept := range []string{"gpt-4o", "text-embedding-3-small", "gemini-embedding-001", "qwen-max", "mimo-v2.6-pro"} {
 		if _, ok := prices[kept]; !ok {
 			t.Errorf("%s must be priced", kept)
 		}

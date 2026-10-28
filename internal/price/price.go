@@ -113,6 +113,7 @@ var Provider = []string{
 	"minimax",    // MiniMax 系列
 	"moonshotai", // Kimi/Moonshot
 	"v0",         // v0 系列
+	"xiaomi",     // MiMo 系列
 }
 
 // developerFamilies 定义各厂商自研模型的 family 前缀, 用于把聚合厂商托管的第三方模型挡在外面。
@@ -127,6 +128,7 @@ var developerFamilies = map[string][]string{
 	"minimax":    {"minimax"},
 	"moonshotai": {"kimi"},
 	"v0":         {"v0"},
+	"xiaomi":     {"mimo"},
 }
 
 var lastUpdateTime time.Time
