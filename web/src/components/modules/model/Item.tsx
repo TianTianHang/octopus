@@ -17,6 +17,9 @@ interface ModelItemProps {
     layout?: 'grid' | 'list';
 }
 
+// 缓存编辑弹层的实测高度, 让首次打开就能判断是否需要向上弹出。
+let cachedEditOverlayHeight = 0;
+
 export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: ModelItemProps) {
     const t = useTranslations('model');
     const isListLayout = layout === 'list';
@@ -45,17 +48,30 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
         const card = cardRef.current;
         if (!card) return;
         const rect = card.getBoundingClientRect();
+        // 下方空间不足时改为向上弹出, 避免最后一行卡片的编辑弹层被视口底部截断。
+        const height = cachedEditOverlayHeight;
+        const flipUp = height > 0 && rect.top + height > window.innerHeight;
+        const top = flipUp
+            ? Math.min(Math.max(rect.bottom - height, 0), Math.max(window.innerHeight - height, 0))
+            : rect.top;
         setOverlayRect((prev) => {
-            if (prev && prev.top === rect.top && prev.left === rect.left && prev.width === rect.width) {
+            if (prev && prev.top === top && prev.left === rect.left && prev.width === rect.width) {
                 return prev;
             }
-            return { top: rect.top, left: rect.left, width: rect.width };
+            return { top, left: rect.left, width: rect.width };
         });
     }, []);
 
     const closeEdit = useCallback(() => {
         setIsEditOpen(false);
     }, []);
+
+    // 弹层首帧渲染后回报实际高度; 高度变化时重新锚定, 让翻转判断在打开瞬间生效。
+    const handleOverlayHeightChange = useCallback((height: number) => {
+        if (height === cachedEditOverlayHeight) return;
+        cachedEditOverlayHeight = height;
+        updateOverlayRect();
+    }, [updateOverlayRect]);
 
     const handleEditClick = () => {
         setConfirmDelete(false);
@@ -248,18 +264,17 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
                                     width: `${overlayRect.width}px`,
                                 }}
                             >
-                                <div className="relative">
-                                    <ModelEditOverlay
-                                        layoutId={editLayoutId}
-                                        modelName={model.name}
-                                        brandColor={brandColor}
-                                        editValues={editValues}
-                                        isPending={updateModel.isPending}
-                                        onChange={setEditValues}
-                                        onCancel={handleCancelEdit}
-                                        onSave={handleSaveEdit}
-                                    />
-                                </div>
+                                <ModelEditOverlay
+                                    layoutId={editLayoutId}
+                                    onHeightChange={handleOverlayHeightChange}
+                                    modelName={model.name}
+                                    brandColor={brandColor}
+                                    editValues={editValues}
+                                    isPending={updateModel.isPending}
+                                    onChange={setEditValues}
+                                    onCancel={handleCancelEdit}
+                                    onSave={handleSaveEdit}
+                                />
                             </div>
                         )}
                     </AnimatePresence>,
