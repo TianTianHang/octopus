@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Clock, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, CircleOff, Link } from 'lucide-react';
+import { Clock, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound, CircleOff, Link, Gauge } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
@@ -165,6 +165,32 @@ function getHeadlineInputTokens(log: RelayLog) {
         ? log.input_tokens - cacheRead
         : log.input_tokens;
     return Math.max(0, dedupedInput + cacheWrite);
+}
+
+// getGenerationMs 返回首字之后的有效生成时长。没有首字时间(非流式)时退回总耗时。
+function getGenerationMs(log: RelayLog): number | null {
+    if (log.use_time <= 0) return null;
+    const ttft = log.ftut > 0 && log.ftut < log.use_time ? log.ftut : 0;
+    const ms = log.use_time - ttft;
+    return ms > 0 ? ms : null;
+}
+
+// getOutputTokensPerSecond 用输出 token 除以有效生成时长, 得到生成速度。
+function getOutputTokensPerSecond(log: RelayLog): number | null {
+    if (log.output_tokens <= 0) return null;
+    const ms = getGenerationMs(log);
+    if (!ms) return null;
+    return log.output_tokens / (ms / 1000);
+}
+
+// getCacheHitRate 返回缓存命中 token 占输入总量的比例。
+// Anthropic 语义的 input_tokens 不含 cache_read, 分母要补上; OpenAI 语义的 input_tokens 已包含。
+function getCacheHitRate(log: RelayLog): number | null {
+    const cacheRead = log.cache_read_tokens ?? 0;
+    if (cacheRead <= 0) return null;
+    const totalInput = isAnthropicChannel(log.channel_name) ? log.input_tokens + cacheRead : log.input_tokens;
+    if (totalInput <= 0) return null;
+    return Math.max(0, Math.min(1, cacheRead / totalInput));
 }
 
 function getWSBadgeMeta(mode: RelayLogWSMode | null | undefined, usedWS: boolean | undefined, t: ReturnType<typeof useTranslations<'log.card'>>) {
@@ -706,13 +732,21 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                                 className="shrink-0 px-1.5 py-0 text-[11px] bg-sky-500/15 text-sky-600 dark:text-sky-400"
                                             >
                                                 {formatCompactTokenCount(log.cache_read_tokens)}
+                                                {getCacheHitRate(log) != null
+                                                    ? ` · ${Math.round(getCacheHitRate(log)! * 100)}%`
+                                                    : ''}
                                             </Badge>
                                         ) : null}
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-1.5">
                                     <ArrowUpFromLine className="size-3.5 shrink-0 text-purple-500" />
-                                    <span>{t('output')} {log.output_tokens.toLocaleString()}</span>
+                                    <span>
+                                        {t('output')} {log.output_tokens.toLocaleString()}
+                                        {getOutputTokensPerSecond(log) != null
+                                            ? ` · ${getOutputTokensPerSecond(log)!.toFixed(1)} t/s`
+                                            : ''}
+                                    </span>
                                 </div>
                                 <div className="flex items-center gap-1.5">
                                     <DollarSign className="size-3.5 shrink-0 text-emerald-500" />
@@ -990,6 +1024,12 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                 <Zap className="size-3.5 text-amber-500" />
                                 <span>{t('duration')}: {formatDurationCompact(log.ftut)} / {formatDurationCompact(log.use_time)}</span>
                             </div>
+                            {getOutputTokensPerSecond(log) != null ? (
+                                <div className="flex items-center gap-1.5">
+                                    <Gauge className="size-3.5 text-cyan-500" />
+                                    <span className="tabular-nums">{getOutputTokensPerSecond(log)!.toFixed(1)} t/s</span>
+                                </div>
+                            ) : null}
                             <div className="flex items-center gap-1.5">
                                 <DollarSign className="size-3.5 text-emerald-500" />
                                 <span className="font-medium text-emerald-600 dark:text-emerald-400">
