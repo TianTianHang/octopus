@@ -1064,30 +1064,73 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 
 			data, err := ra.transformStreamData(ctx, r.data)
-			if err != nil || len(data) == 0 {
+			if err != nil {
 				continue
 			}
-			if firstToken {
-				ra.metrics.SetFirstTokenTime(time.Now())
-				firstToken = false
-				ra.stopFirstTokenTimer()
-				if firstTokenTimer != nil {
-					if !firstTokenTimer.Stop() {
-						select {
-						case <-firstTokenTimer.C:
-						default:
+			if len(data) > 0 {
+				if firstToken {
+					ra.metrics.SetFirstTokenTime(time.Now())
+					firstToken = false
+					ra.stopFirstTokenTimer()
+					if firstTokenTimer != nil {
+						if !firstTokenTimer.Stop() {
+							select {
+							case <-firstTokenTimer.C:
+							default:
+							}
 						}
+						firstTokenTimer = nil
+						firstTokenC = nil
 					}
-					firstTokenTimer = nil
-					firstTokenC = nil
 				}
+
+				ra.streamPayloadWritten.Store(true)
+				ra.getStreamWriter().Write(data)
+				ra.getStreamWriter().Flush()
 			}
 
-			ra.streamPayloadWritten.Store(true)
-			ra.getStreamWriter().Write(data)
-			ra.getStreamWriter().Flush()
+			// 上游发出协议终态后可能迟迟不关闭连接(网关保活、代理缓冲), 继续读会一直阻塞,
+			// 直到客户端自己断开并把已经完整交付的响应当成 context canceled 记录。
+			// 终态事件已转换并写给客户端, 这里直接结束本轮, 让成功被正确记录、也省掉一次无谓等待。
+			if ra.channel != nil && upstreamStreamTerminalEvent(ra.channel.Type, r.data) {
+				if !ra.streamPayloadWritten.Load() {
+					// 只有终态没有任何内容: 仍按空流处理, 交给上层重试/切换渠道。
+					return errEmptyUpstreamStream
+				}
+				log.Debugf("upstream stream reached its terminal event, finishing")
+				return nil
+			}
 		}
 	}
+}
+
+// upstreamStreamTerminalEvent 报告一条原始上游 SSE 事件是否是当前渠道协议的终态。
+// 各协议的结束方式不同: OpenAI Chat 用 [DONE], Anthropic 用 message_stop,
+// Responses 用 response.completed 系列, Gemini 没有终态事件只能等 EOF。
+func upstreamStreamTerminalEvent(channelType outbound.OutboundType, data string) bool {
+	switch channelType {
+	case outbound.OutboundTypeAnthropic:
+		return sseEventTypeIn(data, anthropicPassthroughTerminalEvents)
+	case outbound.OutboundTypeOpenAIResponse:
+		return sseEventTypeIn(data, responsesPassthroughTerminalEvents)
+	case outbound.OutboundTypeGemini:
+		return false
+	default:
+		// OpenAI Chat 兼容协议(含 Volcengine)统一用 [DONE] 结束。
+		return strings.TrimSpace(data) == "[DONE]"
+	}
+}
+
+// sseEventTypeIn 判断 SSE data 里的 type 字段是否命中给定的终态集合。
+func sseEventTypeIn(data string, terminalTypes map[string]struct{}) bool {
+	var head struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &head); err != nil {
+		return false
+	}
+	_, ok := terminalTypes[head.Type]
+	return ok
 }
 
 // transformStreamData 转换流式数据
