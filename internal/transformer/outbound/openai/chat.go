@@ -45,15 +45,19 @@ type ChatCompletionsRequest struct {
 	Modalities          []string              `json:"modalities,omitempty"`
 	Audio               *ChatCompletionsAudio `json:"audio,omitempty"`
 	ReasoningEffort     string                `json:"reasoning_effort,omitempty"`
-	ServiceTier         *string               `json:"service_tier,omitempty"`
-	Stop                *model.Stop           `json:"stop,omitempty"`
-	Stream              *bool                 `json:"stream,omitempty"`
-	StreamOptions       *model.StreamOptions  `json:"stream_options,omitempty"`
-	ParallelToolCalls   *bool                 `json:"parallel_tool_calls,omitempty"`
-	Tools               []ChatCompletionsTool `json:"tools,omitempty"`
-	ToolChoice          *model.ToolChoice     `json:"tool_choice,omitempty"`
-	ResponseFormat      *model.ResponseFormat `json:"response_format,omitempty"`
-	SafetyIdentifier    *string               `json:"safety_identifier,omitempty"`
+	// Thinking / ChatTemplateKwargs 是 provider 私有扩展, 只在客户端显式传入时透传,
+	// 不在这里把各家方言翻译成统一字段。
+	Thinking           json.RawMessage       `json:"thinking,omitempty"`
+	ChatTemplateKwargs json.RawMessage       `json:"chat_template_kwargs,omitempty"`
+	ServiceTier        *string               `json:"service_tier,omitempty"`
+	Stop               *model.Stop           `json:"stop,omitempty"`
+	Stream             *bool                 `json:"stream,omitempty"`
+	StreamOptions      *model.StreamOptions  `json:"stream_options,omitempty"`
+	ParallelToolCalls  *bool                 `json:"parallel_tool_calls,omitempty"`
+	Tools              []ChatCompletionsTool `json:"tools,omitempty"`
+	ToolChoice         *model.ToolChoice     `json:"tool_choice,omitempty"`
+	ResponseFormat     *model.ResponseFormat `json:"response_format,omitempty"`
+	SafetyIdentifier   *string               `json:"safety_identifier,omitempty"`
 	// PromptCacheKey mirrors the top-level model field. Only forwarded when
 	// the client populated the field on the Chat entrypoint — Responses
 	// inbound carries its own ResponsesPromptCacheKey pass-through that
@@ -180,6 +184,8 @@ func buildChatCompletionsRequest(request *model.InternalLLMRequest) *ChatComplet
 		Metadata:            request.Metadata,
 		Modalities:          request.Modalities,
 		ReasoningEffort:     request.ReasoningEffort,
+		Thinking:            request.Thinking,
+		ChatTemplateKwargs:  request.ChatTemplateKwargs,
 		ServiceTier:         request.ServiceTier,
 		Stop:                request.Stop,
 		Stream:              request.Stream,

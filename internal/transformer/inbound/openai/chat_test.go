@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/bestruirui/octopus/internal/transformer/model"
@@ -194,5 +195,34 @@ func TestChatInboundTagsRawAPIFormat(t *testing.T) {
 	if req.RawAPIFormat != model.APIFormatOpenAIChatCompletion {
 		t.Fatalf("expected RawAPIFormat=%q, got %q",
 			model.APIFormatOpenAIChatCompletion, req.RawAPIFormat)
+	}
+}
+
+func TestChatInboundParsesProviderExtensions(t *testing.T) {
+	body := []byte(`{
+		"model": "deepseek-chat",
+		"messages": [{"role": "user", "content": "hi"}],
+		"thinking": {"type": "disabled"},
+		"chat_template_kwargs": {"enable_thinking": true}
+	}`)
+
+	request, err := (&ChatInbound{}).TransformRequest(context.Background(), body)
+	if err != nil {
+		t.Fatalf("TransformRequest error = %v", err)
+	}
+	// RawMessage 保留客户端的原始字节(含空白), 这里只校验语义。
+	var thinking map[string]any
+	if err := json.Unmarshal(request.Thinking, &thinking); err != nil {
+		t.Fatalf("thinking is not valid JSON: %v", err)
+	}
+	if thinking["type"] != "disabled" {
+		t.Errorf("thinking = %v, want type=disabled", thinking)
+	}
+	var kwargs map[string]any
+	if err := json.Unmarshal(request.ChatTemplateKwargs, &kwargs); err != nil {
+		t.Fatalf("chat_template_kwargs is not valid JSON: %v", err)
+	}
+	if kwargs["enable_thinking"] != true {
+		t.Errorf("chat_template_kwargs = %v, want enable_thinking=true", kwargs)
 	}
 }
