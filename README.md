@@ -379,7 +379,7 @@ Edit `~/.codex/auth.json`
 
 ## 🔀 Differences from Upstream
 
-Compatible with [bestruirui/octopus](https://github.com/bestruirui/octopus), ~180 commits ahead on `dev`.
+Compatible with [bestruirui/octopus](https://github.com/bestruirui/octopus), ~300 commits ahead on `dev`.
 
 ### 🏗️ New subsystems
 

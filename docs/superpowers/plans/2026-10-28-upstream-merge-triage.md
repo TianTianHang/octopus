@@ -201,14 +201,24 @@
 | `fix(web): flip the model edit overlay when it would overflow the viewport` | `a9f65c8` | 高度缓存 + 贴底翻转 |
 | `feat(transformer): pass through provider thinking extensions on chat` | `4c4c79b` | `thinking` / `chat_template_kwargs` 原样透传 |
 | `test: fix a printf verb flagged by the go 1.26 vet check` | — | 工具链升级后暴露的 vet 问题 |
+| `fix(relay): stop reading the upstream stream once its terminal event arrives` | `10f0204` | 通用转换路径收到终态即结束，避免成功响应被记成 canceled |
+| `feat(relay): resolve {client_header:NAME} placeholders in channel headers` | `1c48ee5` | 四处自定义 Header 应用点统一支持占位符 |
+| `fix(relay): hold startup-only stream events until real output arrives` | `fd8b3b8` | 只有角色/空启动事件的流不再提交，可换渠道重试 |
+| `chore(price): align the preset generator with the runtime filter and refresh` | `e674c17` 后续 | 生成器与运行时过滤一致，预设刷新为 239 个模型 |
+| `chore(deps): tidy modules` | — | go mod tidy：gzip/websocket 转为直接依赖 |
 
 **未做（有意）**
 
 - `d7ca3df` 首页导出 PNG：需新增 `@zumer/snapdom` 依赖，价值中等，单独排期更合适。
 - `bdc9948` 子路径部署：SW 仍是根作用域，需要 Next.js `basePath` 方案，属于设计类改动。
-- `fd8b3b8` / `10f0204` / `44f63cb`：分别涉及流式启动事件缓冲（~200 行）、通用转换路径终态判定、请求注册表与手动取消，均需单独设计。
+- `44f63cb` 手动取消请求：需要新增请求注册表与停止接口，属于子系统级改动。
 - `9851442`：本 fork 的 schema 处理已比上游更严格，不做回退。
 - 其余样式/CI/版本号提交。
+
+**发布**
+
+`bash scripts/build.sh release` 产出 `build/bin/`（8 个平台）、`build/docker/`、`build/archives/` 与校验和；发布二进制已实测可服务新版前端（locale 含 `modelFilter` / `trustDevice`）并正常登录。
+构建环境说明：`proxy.golang.org` 不可达，需 `GOPROXY=https://goproxy.cn,direct` 才能完成 `go mod tidy`。
 
 **验证方式**
 
