@@ -34,6 +34,22 @@ go run main.go start
 ./scripts/build.sh release              # 构建所有平台
 ```
 
+**每次产出新构建，版本号默认 +1**（patch 位）。构建脚本用 `git describe --tags` 取版本，
+所以发布前先看当前 tag、在当前提交上打下一个 tag 再构建：
+
+```bash
+git describe --tags --abbrev=0          # 看当前版本，例如 v0.8.43
+git tag v0.8.44                         # 默认 patch +1（v0.8.43 → v0.8.44）
+bash ./scripts/build.sh release         # 产物版本即 v0.8.44
+```
+
+- 不要用旧 tag 构建，也不要移动或复用已存在的 tag；任何两次构建的版本号都不能相同。
+- `scripts/build.sh` 在部分检出里没有可执行位，统一用 `bash ./scripts/build.sh ...` 调用，避免 `Permission denied`。
+- 构建环境访问不了 `proxy.golang.org` 时，先 `export GOPROXY=https://goproxy.cn,direct`，
+  否则脚本里的 `go mod tidy` 会因超时失败。
+- 构建后 `internal/price/presets.go` 只可能变动首行更新时间；若没有真实价格变化，提交前用
+  `git checkout -- internal/price/presets.go` 还原即可。
+
 ### Docker
 ```bash
 docker compose up -d
