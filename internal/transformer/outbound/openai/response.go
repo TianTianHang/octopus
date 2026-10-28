@@ -65,7 +65,7 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	applyAcceptHeader(req, request.Stream != nil && *request.Stream)
 	req.Header.Set("Authorization", "Bearer "+key)
 	applyOpenAIOrgProjectHeaders(req, request)
 
@@ -107,7 +107,7 @@ func (o *ResponseOutbound) TransformRequestRaw(ctx context.Context, rawBody []by
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	applyAcceptHeader(req, rawResponsesRequestStreams(rawBody))
 	req.Header.Set("Authorization", "Bearer "+key)
 	// OpenAI-Organization / OpenAI-Project are forwarded by the relay's
 	// copyHeaders on the raw-passthrough path, so no explicit application
@@ -125,6 +125,19 @@ func (o *ResponseOutbound) TransformRequestRaw(ctx context.Context, rawBody []by
 	req.Method = http.MethodPost
 
 	return req, nil
+}
+
+// rawResponsesRequestStreams 判断原样透传的 Responses 请求体是否要求流式返回。
+// 透传路径不解析结构，这里只取顶层的 stream 字段；解析失败按非流式处理，
+// 让上游自己决定失败方式，而不是因为 Accept 猜错了协议。
+func rawResponsesRequestStreams(rawBody []byte) bool {
+	var probe struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(rawBody, &probe); err != nil {
+		return false
+	}
+	return probe.Stream
 }
 
 func rewriteRawResponsesRequestModel(rawBody []byte, modelName string) ([]byte, error) {

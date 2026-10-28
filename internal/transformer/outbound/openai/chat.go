@@ -113,7 +113,7 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	applyAcceptHeader(req, request.Stream != nil && *request.Stream)
 	req.Header.Set("Authorization", "Bearer "+key)
 	applyOpenAIOrgProjectHeaders(req, request)
 
@@ -299,4 +299,18 @@ func (o *ChatOutbound) TransformStreamEvent(ctx context.Context, eventData []byt
 		return nil, err
 	}
 	return model.StreamEventsFromInternalResponse(stream), nil
+}
+
+// applyAcceptHeader 按请求是否流式设置 Accept。
+// 上游会按 Accept 决定返回 SSE 还是普通 JSON, 固定写 application/json 会让流式请求
+// 在部分网关被当成非流式处理(或直接拒绝); anthropic 出站一直是这么做的, 这里对齐。
+func applyAcceptHeader(req *http.Request, stream bool) {
+	if req == nil {
+		return
+	}
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+		return
+	}
+	req.Header.Set("Accept", "application/json")
 }
