@@ -16,7 +16,8 @@
         "button": {
             "loading": "Logging in...",
             "submit": "Login"
-        }
+        },
+        "trustDevice": "Trust this device for 30 days"
     },
     "apiKeyDashboard": {
         "error": "Failed to load data",

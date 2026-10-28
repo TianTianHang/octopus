@@ -28,6 +28,8 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [apiKey, setApiKey] = useState("")
+  // 信任设备: 后端用 -1 换取 30 天有效期, 默认 1 天。
+  const [trustDevice, setTrustDevice] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const loginMutation = useLogin()
@@ -42,7 +44,7 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
         await loginMutation.mutateAsync({
           username,
           password,
-          expire: 86400,
+          expire: trustDevice ? -1 : 86400,
         })
       } else {
         await apiKeyLoginMutation.mutateAsync(apiKey)
@@ -127,6 +129,16 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
                     disabled={isPending}
                   />
                 </Field>
+                <label className="flex items-center gap-2 text-sm text-muted-foreground select-none">
+                  <input
+                    type="checkbox"
+                    className="size-4 rounded border-border accent-primary"
+                    checked={trustDevice}
+                    onChange={(e) => setTrustDevice(e.target.checked)}
+                    disabled={isPending}
+                  />
+                  <span>{t('trustDevice')}</span>
+                </label>
               </TabsContent>
               <TabsContent value="apikey">
                 <Field>

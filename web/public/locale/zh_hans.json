@@ -16,7 +16,8 @@
         "button": {
             "loading": "登录中...",
             "submit": "登录"
-        }
+        },
+        "trustDevice": "信任此设备（30 天免登录）"
     },
     "apiKeyDashboard": {
         "error": "加载数据失败",

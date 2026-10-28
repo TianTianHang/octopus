@@ -16,7 +16,8 @@
         "button": {
             "loading": "登入中...",
             "submit": "登入"
-        }
+        },
+        "trustDevice": "信任此裝置（30 天免登入）"
     },
     "apiKeyDashboard": {
         "error": "載入資料失敗",

@@ -47,19 +47,31 @@ func getJWTSecret() []byte {
 	return jwtSecretKey
 }
 
-func GenerateJWTToken(expiresMin int) (string, string, error) {
+// MaxSessionSeconds 是单次登录允许的最长有效期, 与"信任设备"的 30 天保持一致。
+// 不设上限时客户端可以传入任意大的值, 把一次登录变成近乎永久有效的会话。
+const MaxSessionSeconds = 30 * 24 * 60 * 60
+
+// GenerateJWTToken 按有效期生成 JWT。
+// expiresSec 以秒为单位: 0 表示默认 15 分钟, -1 表示"信任设备" 30 天,
+// 正数表示自定义秒数(超过 MaxSessionSeconds 会被截断)。
+func GenerateJWTToken(expiresSec int) (string, string, error) {
 	now := time.Now()
 	claims := &jwt.RegisteredClaims{
 		IssuedAt:  jwt.NewNumericDate(now),
 		NotBefore: jwt.NewNumericDate(now),
 		Issuer:    conf.APP_NAME,
 	}
-	if expiresMin == 0 {
+	switch {
+	case expiresSec == -1:
+		claims.ExpiresAt = jwt.NewNumericDate(now.Add(time.Duration(MaxSessionSeconds) * time.Second))
+	case expiresSec > 0:
+		if expiresSec > MaxSessionSeconds {
+			expiresSec = MaxSessionSeconds
+		}
+		claims.ExpiresAt = jwt.NewNumericDate(now.Add(time.Duration(expiresSec) * time.Second))
+	default:
+		// 0 与其它负数都按默认 15 分钟处理: 不带 ExpiresAt 的 token 等于永不过期。
 		claims.ExpiresAt = jwt.NewNumericDate(now.Add(time.Duration(15) * time.Minute))
-	} else if expiresMin > 0 {
-		claims.ExpiresAt = jwt.NewNumericDate(now.Add(time.Duration(expiresMin) * time.Minute))
-	} else if expiresMin == -1 {
-		claims.ExpiresAt = jwt.NewNumericDate(now.Add(time.Duration(30) * 24 * time.Hour))
 	}
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(getJWTSecret())
 	if err != nil {

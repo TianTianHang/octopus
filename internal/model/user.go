@@ -15,7 +15,7 @@ type User struct {
 type UserLogin struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
-	Expire   int    `json:"expire"`
+	Expire   int    `json:"expire"` // 会话有效期(秒): 0 默认 15 分钟, -1 信任设备 30 天
 }
 
 type UserChangePassword struct {
