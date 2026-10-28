@@ -696,8 +696,9 @@ func (ra *relayAttempt) handleWSStreamResponse(ctx context.Context, reader *wsUp
 				return fmt.Errorf("ws stream read error: %w", r.err)
 			}
 
-			// Transform through outbound → internal → inbound pipeline
-			data, err := ra.transformStreamData(ctx, string(r.data))
+			// Transform through outbound → internal → inbound pipeline.
+			// WS 路径有自己的续传/重放语义, 这里不做启动事件缓冲, 保持既有提交时机。
+			data, _, err := ra.transformStreamData(ctx, string(r.data))
 			if err != nil || len(data) == 0 {
 				continue
 			}
@@ -975,6 +976,11 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 
 	firstToken := true
 
+	// 在拿到真实输出前, 转换结果先暂存: 只有角色/空启动事件的流仍可换渠道重试,
+	// 不必先给客户端写半截再断开。
+	var startupBuf bytes.Buffer
+	committed := false
+
 	disconnect := func() error {
 		err := contextError(ctx)
 		if timeoutErr := ra.firstTokenTimeoutIfNeeded(ctx, err); timeoutErr != nil {
@@ -1070,12 +1076,31 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 
-			data, err := ra.transformStreamData(ctx, r.data)
+			data, hasOutput, err := ra.transformStreamData(ctx, r.data)
 			if err != nil {
+				if !committed {
+					// 还没有任何输出时转换失败: 说明这轮拿不到可用内容, 交给上层换渠道重试。
+					return fmt.Errorf("failed to transform startup stream event: %w", err)
+				}
 				continue
 			}
-			if len(data) > 0 {
-				if firstToken {
+
+			// 在拿到真实输出之前, 转换结果只进缓冲不发客户端: 只有角色/空启动事件的流
+			// 仍然可以换渠道重试, 不会先给客户端写半截再断开。
+			if !committed {
+				if len(data) > 0 {
+					startupBuf.Write(data)
+				}
+				if hasOutput {
+					committed = true
+					ra.streamPayloadWritten.Store(true)
+					if startupBuf.Len() > 0 {
+						ra.getStreamWriter().Write(startupBuf.Bytes())
+						startupBuf.Reset()
+					}
+					ra.getStreamWriter().Flush()
+
+					// 首字时间以第一次出现真实输出为准, 启动事件不应提前停止首字超时计时。
 					ra.metrics.SetFirstTokenTime(time.Now())
 					firstToken = false
 					ra.stopFirstTokenTimer()
@@ -1090,8 +1115,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						firstTokenC = nil
 					}
 				}
-
-				ra.streamPayloadWritten.Store(true)
+			} else if len(data) > 0 {
 				ra.getStreamWriter().Write(data)
 				ra.getStreamWriter().Flush()
 			}
@@ -1100,8 +1124,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			// 直到客户端自己断开并把已经完整交付的响应当成 context canceled 记录。
 			// 终态事件已转换并写给客户端, 这里直接结束本轮, 让成功被正确记录、也省掉一次无谓等待。
 			if ra.channel != nil && upstreamStreamTerminalEvent(ra.channel.Type, r.data) {
-				if !ra.streamPayloadWritten.Load() {
-					// 只有终态没有任何内容: 仍按空流处理, 交给上层重试/切换渠道。
+				if !committed {
+					// 只有终态与启动事件、没有任何内容: 按空流处理, 交给上层重试/切换渠道。
 					return errEmptyUpstreamStream
 				}
 				log.Debugf("upstream stream reached its terminal event, finishing")
@@ -1140,27 +1164,78 @@ func sseEventTypeIn(data string, terminalTypes map[string]struct{}) bool {
 	return ok
 }
 
-// transformStreamData 转换流式数据
-func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, error) {
+// transformStreamData 转换一块上游流数据, 并报告其中是否包含真实输出。
+// hasOutput 为 false 表示只有角色/空内容块这类启动事件, 调用方可以继续暂存以便失败重试。
+func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, bool, error) {
 	events, ok, err := ra.decodeOutboundStreamEvents(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to transform stream events: %v", err)
-		return nil, err
+		return nil, false, err
 	}
 	if ok {
-		return ra.encodeInboundStreamEvents(ctx, events)
+		encoded, err := ra.encodeInboundStreamEvents(ctx, events)
+		return encoded, streamEventsHaveOutput(events), err
 	}
 
 	internalStream, err := ra.decodeOutboundStreamResponse(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
-		return nil, err
+		return nil, false, err
 	}
 	if internalStream == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 
-	return ra.encodeInboundStreamResponse(ctx, internalStream)
+	encoded, err := ra.encodeInboundStreamResponse(ctx, internalStream)
+	return encoded, streamResponseHasOutput(internalStream), err
+}
+
+// streamEventsHaveOutput 报告这批事件里是否已经出现真正的模型输出
+// (文本、思考、签名、工具调用或错误)。只带角色或空内容块的启动事件不算输出。
+func streamEventsHaveOutput(events []model.StreamEvent) bool {
+	for _, event := range events {
+		switch event.Kind {
+		case model.StreamEventKindTextDelta, model.StreamEventKindThinkingDelta,
+			model.StreamEventKindSignatureDelta, model.StreamEventKindToolCallStart,
+			model.StreamEventKindToolCallDelta, model.StreamEventKindError:
+			return true
+		case model.StreamEventKindContentBlockStart:
+			if event.ContentBlock == nil {
+				continue
+			}
+			if event.ContentBlock.Text != "" || event.ContentBlock.Type == "tool_use" || event.ContentBlock.Type == "server_tool_use" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// streamResponseHasOutput 是不支持 StreamEvent 的适配器上的兜底判断:
+// 响应块里已经带了文本、多段内容、工具调用或拒绝内容, 才算真正有输出。
+func streamResponseHasOutput(response *model.InternalLLMResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if messageHasOutput(choice.Delta) || messageHasOutput(choice.Message) {
+			return true
+		}
+	}
+	return false
+}
+
+func messageHasOutput(message *model.Message) bool {
+	if message == nil {
+		return false
+	}
+	if message.Content.Content != nil && *message.Content.Content != "" {
+		return true
+	}
+	if len(message.Content.MultipleContent) > 0 || len(message.ToolCalls) > 0 {
+		return true
+	}
+	return message.Refusal != ""
 }
 
 func (ra *relayAttempt) decodeOutboundStreamEvents(ctx context.Context, data []byte) ([]model.StreamEvent, bool, error) {
