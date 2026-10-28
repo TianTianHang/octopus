@@ -302,7 +302,7 @@ func copyProxyHeaders(src http.Header, channel *dbmodel.Channel, dst http.Header
 		if strings.EqualFold(header.HeaderKey, "Content-Type") {
 			continue
 		}
-		dst.Set(header.HeaderKey, header.HeaderValue)
+		dst.Set(header.HeaderKey, resolveCustomHeaderValue(header.HeaderValue, src))
 	}
 	// 防止 Go 默认 User-Agent 泄露到上游
 	if dst.Get("User-Agent") == "" {

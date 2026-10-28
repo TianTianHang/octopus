@@ -414,6 +414,8 @@ Key fields:
 | API Key | **Can add multiple Keys** (enabling multi-Key rotation, see FAQ Q6) |
 | Advanced Settings | Custom Headers, channel proxy, parameter override (JSON), auto-sync, auto-group, Responses WS mode, match regex, notes |
 
+> Custom header values support the `{client_header:NAME}` placeholder, which is replaced with the caller's request header value (case-insensitive, empty when absent) — e.g. `{client_header:X-Request-Id}` forwards the caller's trace ID upstream.
+
 After adding a manual channel, **you still need to add its models to a group on the Groups page** before it can be used externally.
 
 > 💡 Integration tips:

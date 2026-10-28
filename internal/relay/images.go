@@ -663,7 +663,10 @@ func copyHeadersToUpstream(req *http.Request, c *gin.Context, channel *model.Cha
 
 	if len(channel.CustomHeader) > 0 {
 		for _, h := range channel.CustomHeader {
-			req.Header.Set(h.HeaderKey, h.HeaderValue)
+			if strings.TrimSpace(h.HeaderKey) == "" {
+				continue
+			}
+			req.Header.Set(h.HeaderKey, resolveCustomHeaderValue(h.HeaderValue, c.Request.Header))
 		}
 	}
 }
