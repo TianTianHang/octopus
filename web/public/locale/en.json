@@ -805,7 +805,8 @@
         "create": {
             "dialogTitle": "Create New Channel",
             "submit": "Create Channel",
-            "submitting": "Creating..."
+            "submitting": "Creating...",
+            "createFailed": "Failed to create channel"
         },
         "form": {
             "add": "Add",

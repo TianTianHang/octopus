@@ -805,7 +805,8 @@
         "create": {
             "dialogTitle": "建立新供應源",
             "submit": "建立供應源",
-            "submitting": "建立中..."
+            "submitting": "建立中...",
+            "createFailed": "建立供應源失敗"
         },
         "form": {
             "add": "新增",

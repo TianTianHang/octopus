@@ -93,6 +93,10 @@ export function CreateDialogContent() {
                         match_regex: '',
                     });
                     setIsOpen(false);
+                },
+                onError: (error) => {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    toast.error(t('createFailed'), { description: errorMessage });
                 }
             });
     };

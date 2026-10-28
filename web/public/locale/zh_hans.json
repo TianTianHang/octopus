@@ -805,7 +805,8 @@
         "create": {
             "dialogTitle": "创建新渠道",
             "submit": "创建渠道",
-            "submitting": "创建中..."
+            "submitting": "创建中...",
+            "createFailed": "创建渠道失败"
         },
         "form": {
             "add": "添加",
