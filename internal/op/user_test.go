@@ -9,7 +9,7 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 )
 
-func setupUserOpTestDB(t *testing.T) {
+func setupOpTestDB(t *testing.T) {
 	t.Helper()
 
 	if dbpkg.GetDB() != nil {
@@ -25,7 +25,7 @@ func setupUserOpTestDB(t *testing.T) {
 }
 
 func TestUserSetPasswordOverwritesWithoutOldPassword(t *testing.T) {
-	setupUserOpTestDB(t)
+	setupOpTestDB(t)
 	if err := UserInit(); err != nil {
 		t.Fatalf("UserInit failed: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestUserSetPasswordOverwritesWithoutOldPassword(t *testing.T) {
 }
 
 func TestUserSetPasswordValidatesInput(t *testing.T) {
-	setupUserOpTestDB(t)
+	setupOpTestDB(t)
 	if err := UserInit(); err != nil {
 		t.Fatalf("UserInit failed: %v", err)
 	}

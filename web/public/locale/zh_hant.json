@@ -944,7 +944,8 @@
             "create_failed": "建立通道失敗。",
             "update_failed": "更新通道失敗。",
             "delete_failed": "刪除通道失敗。",
-            "fetch_models_failed": "取得通道模型失敗。"
+            "fetch_models_failed": "取得通道模型失敗。",
+            "sync_in_progress": "模型同步正在進行中，請等待目前同步結束後再試。"
         },
         "group": {
             "not_found": "分組不存在。",

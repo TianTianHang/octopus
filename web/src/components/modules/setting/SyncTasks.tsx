@@ -106,7 +106,11 @@ export function SettingSyncTasks() {
                 pendingLabel={t('syncTasks.llmSync.pending')}
                 onRun={() => syncChannel.mutate(undefined, {
                     onSuccess: () => toast.success(t('syncTasks.llmSync.success')),
-                    onError: () => toast.error(t('syncTasks.llmSync.failed')),
+                    onError: (error) => {
+                        // 冲突(已有同步在跑)等错误的原因由后端给出, 放进描述里才看得出为什么失败。
+                        const message = error instanceof Error ? error.message : String(error);
+                        toast.error(t('syncTasks.llmSync.failed'), { description: message });
+                    },
                 })}
             />
 

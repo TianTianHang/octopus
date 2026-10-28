@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -13,10 +14,32 @@ import (
 	"github.com/bestruirui/octopus/internal/utils/xstrings"
 )
 
-var lastSyncModelsTime = time.Now()
+var (
+	lastSyncModelsTime = time.Now()
 
-// SyncModelsTask 同步模型任务
+	// syncModelsRunning 保证同一时刻只有一个同步在跑。定时调度与手动触发都会走这里,
+	// 并发同步会重复写渠道模型, 并按同一批模型名插入价格, 触发唯一键冲突让整批失败。
+	syncModelsRunning atomic.Bool
+)
+
+// SyncModelsTask 同步模型任务, 供定时调度调用; 已有同步在跑时直接跳过。
 func SyncModelsTask() {
+	_ = TrySyncModelsTask()
+}
+
+// TrySyncModelsTask 尝试执行一次模型同步; 已有同步在跑时返回 false, 不做任何事。
+func TrySyncModelsTask() bool {
+	if !syncModelsRunning.CompareAndSwap(false, true) {
+		log.Warnf("sync models skipped: previous run still in progress")
+		return false
+	}
+	defer syncModelsRunning.Store(false)
+
+	syncModels()
+	return true
+}
+
+func syncModels() {
 	log.Debugf("sync models task started")
 	startTime := time.Now()
 	defer func() {

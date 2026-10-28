@@ -8,6 +8,7 @@ import (
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/utils/cache"
+	"gorm.io/gorm/clause"
 )
 
 var llmModelCache = cache.New[string, model.LLMPrice](16)
@@ -88,7 +89,11 @@ func LLMBatchCreate(llmInfos []model.LLMInfo, ctx context.Context) error {
 	if len(newLLMInfos) == 0 {
 		return nil
 	}
-	if err := db.GetDB().WithContext(ctx).Create(&newLLMInfos).Error; err != nil {
+	// 缓存与插入之间可能有并发同步插入了同名模型: 用 DoNothing 跳过已存在的行,
+	// 否则整批插入会因为主键冲突失败, 连不算冲突的模型也一起写不进去。
+	if err := db.GetDB().WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&newLLMInfos).Error; err != nil {
 		return err
 	}
 	for _, llmInfo := range newLLMInfos {

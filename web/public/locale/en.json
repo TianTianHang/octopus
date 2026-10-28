@@ -944,7 +944,8 @@
             "create_failed": "Failed to create the channel.",
             "update_failed": "Failed to update the channel.",
             "delete_failed": "Failed to delete the channel.",
-            "fetch_models_failed": "Failed to fetch channel models."
+            "fetch_models_failed": "Failed to fetch channel models.",
+            "sync_in_progress": "A model sync is already running. Try again when it finishes."
         },
         "group": {
             "not_found": "The group was not found.",

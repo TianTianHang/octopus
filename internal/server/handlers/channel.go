@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/apperror"
 	"github.com/bestruirui/octopus/internal/helper"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -204,7 +205,12 @@ func fetchModel(c *gin.Context) {
 }
 
 func syncChannel(c *gin.Context) {
-	task.SyncModelsTask()
+	// 手动触发与定时任务共用同一把同步锁: 已有同步在跑时返回冲突, 而不是排队或并发执行。
+	if !task.TrySyncModelsTask() {
+		resp.ErrorWithAppError(c, http.StatusConflict,
+			apperror.New(codeChannelSyncInProgress, "model sync already in progress").WithStatus(http.StatusConflict))
+		return
+	}
 	resp.Success(c, nil)
 }
 
