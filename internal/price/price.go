@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,10 +50,21 @@ func fetchLLMPriceBody(ctx context.Context, url string, useProxy bool) ([]byte, 
 
 // parseLLMPrice 把数据源正文解析成 "模型名 -> 价格" 的映射。
 // 只保留 Provider 列表中的厂商: 数据源收录了数百个服务商, 全量载入会让未知厂商的模型套用错误价格。
+//
+// 同一厂商下还要做两层过滤:
+//   - 只接受带文本输出的模型。图片/音频/视频模型的计价单位与 token 不同, 套用文本价格会算错成本。
+//   - 只接受该厂商自研的模型系列。聚合厂商(如 alibaba)同时托管 glm、deepseek、kimi,
+//     按托管厂商的价格计费会让这些模型的价格偏离真实值, 它们应来自各自的厂商节点。
+//
+// 嵌入模型保留: 与本仓库的文本模型一样按 token 计价, 转发链路也会照常计费。
 func parseLLMPrice(body []byte) (map[string]model.LLMPrice, error) {
 	var rawPrice map[string]struct {
 		Models map[string]struct {
-			ID   string         `json:"id"`
+			ID         string `json:"id"`
+			Family     string `json:"family"`
+			Modalities struct {
+				Output []string `json:"output"`
+			} `json:"modalities"`
 			Cost model.LLMPrice `json:"cost"`
 		} `json:"models"`
 	}
@@ -61,13 +73,35 @@ func parseLLMPrice(body []byte) (map[string]model.LLMPrice, error) {
 	}
 	prices := make(map[string]model.LLMPrice)
 	for _, provider := range Provider {
+		familyPrefixes := developerFamilies[provider]
 		for _, item := range rawPrice[provider].Models {
-			prices[strings.ToLower(item.ID)] = item.Cost
+			modelID := strings.ToLower(item.ID)
+			if modelID == "" || !slices.Contains(item.Modalities.Output, "text") {
+				continue
+			}
+			// 未配置系列前缀的厂商不做系列过滤, 避免新增厂商时把模型全丢掉。
+			if len(familyPrefixes) > 0 && !hasAnyPrefix(strings.ToLower(item.Family), familyPrefixes) {
+				continue
+			}
+			prices[modelID] = item.Cost
 		}
 	}
 	return prices, nil
 }
 
+// hasAnyPrefix 判断 value 是否以 prefixes 中的任一项开头。
+func hasAnyPrefix(value string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Provider 是参与价格同步的厂商, 同时也是遍历顺序。
+// 顺序固定, 避免同一个模型被多个厂商收录时(例如 glm 同时挂在 zhipuai 与 alibaba 下)
+// 价格随 map 遍历顺序抖动。
 var Provider = []string{
 	"openai",     // GPT 系列
 	"anthropic",  // Claude 系列
@@ -79,6 +113,20 @@ var Provider = []string{
 	"minimax",    // MiniMax 系列
 	"moonshotai", // Kimi/Moonshot
 	"v0",         // v0 系列
+}
+
+// developerFamilies 定义各厂商自研模型的 family 前缀, 用于把聚合厂商托管的第三方模型挡在外面。
+var developerFamilies = map[string][]string{
+	"openai":     {"gpt", "o", "text-embedding"},
+	"anthropic":  {"claude"},
+	"google":     {"gemini", "gemma", "lyria", "veo"},
+	"deepseek":   {"deepseek"},
+	"xai":        {"grok"},
+	"alibaba":    {"qwen", "qvq"},
+	"zhipuai":    {"glm"},
+	"minimax":    {"minimax"},
+	"moonshotai": {"kimi"},
+	"v0":         {"v0"},
 }
 
 var lastUpdateTime time.Time
