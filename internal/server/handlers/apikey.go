@@ -58,7 +58,14 @@ func createAPIKey(c *gin.Context) {
 		resp.ErrorWithAppError(c, http.StatusBadRequest, apperror.New(apperror.CodeCommonInvalidParam, "max_rpm must be non-negative").WithStatus(http.StatusBadRequest))
 		return
 	}
-	req.APIKey = auth.GenerateAPIKey()
+	// 允许用户自带 key 值(迁移/对接既有客户端用); 留空则自动生成。
+	req.APIKey = strings.TrimSpace(req.APIKey)
+	if req.APIKey == "" {
+		req.APIKey = auth.GenerateAPIKey()
+	} else if err := op.APIKeyValidateValue(req.APIKey, 0); err != nil {
+		resp.ErrorWithAppError(c, http.StatusBadRequest, apperror.New(apperror.CodeCommonInvalidParam, err.Error()).WithStatus(http.StatusBadRequest))
+		return
+	}
 	if err := op.APIKeyCreate(&req, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
@@ -84,6 +91,13 @@ func updateAPIKey(c *gin.Context) {
 	if req.MaxRPM < 0 {
 		resp.ErrorWithAppError(c, http.StatusBadRequest, apperror.New(apperror.CodeCommonInvalidParam, "max_rpm must be non-negative").WithStatus(http.StatusBadRequest))
 		return
+	}
+	// 空值表示沿用原 key; 非空则校验前缀、长度与唯一性后再落库。
+	if req.APIKey != "" {
+		if err := op.APIKeyValidateValue(strings.TrimSpace(req.APIKey), req.ID); err != nil {
+			resp.ErrorWithAppError(c, http.StatusBadRequest, apperror.New(apperror.CodeCommonInvalidParam, err.Error()).WithStatus(http.StatusBadRequest))
+			return
+		}
 	}
 	if err := op.APIKeyUpdate(&req, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())

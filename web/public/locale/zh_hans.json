@@ -324,6 +324,10 @@
             },
             "form": {
                 "name": "名称",
+                "keyValue": "API Key 值",
+                "keyValueGeneratePlaceholder": "留空自动生成",
+                "keyValueKeepPlaceholder": "留空保持原值",
+                "keyValueHint": "必须以 sk-octopus- 开头，且不能与其他 Key 重复。",
                 "maxCost": "最大金额",
                 "maxCostPlaceholder": "请输入金额",
                 "unlimited": "无限制",

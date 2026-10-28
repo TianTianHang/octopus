@@ -324,6 +324,10 @@
             },
             "form": {
                 "name": "Name",
+                "keyValue": "API key value",
+                "keyValueGeneratePlaceholder": "Leave empty to generate automatically",
+                "keyValueKeepPlaceholder": "Leave empty to keep the current key",
+                "keyValueHint": "Must start with sk-octopus- and be unique.",
                 "maxCost": "Max Cost",
                 "maxCostPlaceholder": "Enter amount",
                 "unlimited": "Unlimited",

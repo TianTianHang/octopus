@@ -74,11 +74,14 @@ function hasModel(supported: string | undefined, model: string): boolean {
     return supported ? supported.split(',').includes(model) : false;
 }
 
+// APIKeyFormData 是创建/编辑表单的完整形状; api_key 留空表示自动生成(创建)或保持不变(编辑)。
+type APIKeyFormData = Omit<APIKey, 'id'>;
+
 interface APIKeyFormProps {
     apiKey?: APIKey;
     isPending: boolean;
     submitLabel: string;
-    onSubmit: (data: Omit<APIKey, 'id' | 'api_key'>) => void;
+    onSubmit: (data: APIKeyFormData) => void;
     onClose: () => void;
 }
 
@@ -86,8 +89,9 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     const t = useTranslations('setting');
     const { data: groups = [] } = useGroupList();
 
-    const [form, setForm] = useState<Omit<APIKey, 'id' | 'api_key'>>(() => ({
+    const [form, setForm] = useState<APIKeyFormData>(() => ({
         name: apiKey?.name ?? '',
+        api_key: '',
         enabled: apiKey?.enabled ?? true,
         expire_at: apiKey?.expire_at,
         max_cost: apiKey?.max_cost,
@@ -127,7 +131,7 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
             ? expireDate.toLocaleDateString()
             : t('apiKey.form.selectDate');
 
-    const updateForm = useCallback((updater: Partial<Omit<APIKey, 'id' | 'api_key'>>) => {
+    const updateForm = useCallback((updater: Partial<APIKeyFormData>) => {
         setForm((prev) => ({ ...prev, ...updater }));
     }, []);
 
@@ -203,6 +207,21 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
                     disabled={isPending}
                     required
                 />
+            </label>
+
+            <label className="grid gap-1 text-xs text-muted-foreground">
+                {t('apiKey.form.keyValue')}
+                <Input
+                    type="text"
+                    value={form.api_key}
+                    onChange={(e) => updateForm({ api_key: e.target.value })}
+                    placeholder={apiKey ? t('apiKey.form.keyValueKeepPlaceholder') : t('apiKey.form.keyValueGeneratePlaceholder')}
+                    className="h-9 text-sm rounded-xl font-mono"
+                    disabled={isPending}
+                />
+                <span className="text-[11px] leading-snug text-muted-foreground/80">
+                    {t('apiKey.form.keyValueHint')}
+                </span>
             </label>
 
             <div className="grid gap-1 text-xs text-muted-foreground">
@@ -411,7 +430,7 @@ function APIKeyFormOverlay({
     apiKey?: APIKey;
     isPending: boolean;
     submitLabel: string;
-    onSubmit: (data: Omit<APIKey, 'id' | 'api_key'>) => void;
+    onSubmit: (data: APIKeyFormData) => void;
     onClose: () => void;
 }) {
     return (
@@ -701,7 +720,7 @@ function APIKeyPanelBase({
 
     const disabledHeaderActions = createAPIKey.isPending || isAdding || !!viewingStats || !!editingKey || !!exportingKey;
 
-    const handleCreate = useCallback((data: Omit<APIKey, 'id' | 'api_key'>) => {
+    const handleCreate = useCallback((data: APIKeyFormData) => {
         createAPIKey.mutate(data, {
             onSuccess: () => {
                 toast.success(t('apiKey.toast.createSuccess'));
@@ -714,7 +733,7 @@ function APIKeyPanelBase({
         });
     }, [createAPIKey, t]);
 
-    const handleUpdate = useCallback((apiKey: APIKey, data: Omit<APIKey, 'id' | 'api_key'>) => {
+    const handleUpdate = useCallback((apiKey: APIKey, data: APIKeyFormData) => {
         updateAPIKey.mutate({ id: apiKey.id, ...data }, {
             onSuccess: () => {
                 toast.success(t('apiKey.toast.updateSuccess'));
