@@ -252,9 +252,49 @@ func (m *RelayMetrics) saveLog(ctx context.Context, success bool, err error, dur
 	}
 	relayLog.Success = success
 
+	// 选路只需要 Key ID, 但排查问题时看不出用的是哪把 key, 落库前补一次可读的备注名。
+	relayLog.Attempts = withAttemptKeyNames(ctx, relayLog.Attempts)
+
 	if logErr := op.RelayLogAdd(ctx, relayLog); logErr != nil {
 		log.Warnf("failed to save relay log: %v", logErr)
 	}
+}
+
+// withAttemptKeyNames 为每次尝试补上渠道 Key 的备注名。
+// 同一个渠道的多把 key 共用一个渠道名, 只有备注名能区分是哪把 key 出了问题;
+// 按渠道缓存一次查询结果, 避免一次请求里重复读取渠道配置。
+func withAttemptKeyNames(ctx context.Context, attempts []model.ChannelAttempt) []model.ChannelAttempt {
+	if len(attempts) == 0 {
+		return attempts
+	}
+	namesByChannel := make(map[int]map[int]string)
+	for i := range attempts {
+		if attempts[i].ChannelID <= 0 || attempts[i].ChannelKeyID <= 0 {
+			continue
+		}
+		names, ok := namesByChannel[attempts[i].ChannelID]
+		if !ok {
+			names = channelKeyNames(ctx, attempts[i].ChannelID)
+			namesByChannel[attempts[i].ChannelID] = names
+		}
+		if name := names[attempts[i].ChannelKeyID]; name != "" {
+			attempts[i].ChannelKeyName = name
+		}
+	}
+	return attempts
+}
+
+// channelKeyNames 返回渠道内 "Key ID -> 备注名" 的映射; 渠道不存在时返回空映射。
+func channelKeyNames(ctx context.Context, channelID int) map[int]string {
+	channel, err := op.ChannelGet(channelID, ctx)
+	if err != nil {
+		return nil
+	}
+	names := make(map[int]string, len(channel.Keys))
+	for _, key := range channel.Keys {
+		names[key.ID] = key.Remark
+	}
+	return names
 }
 
 func updateFinalChannelUsageStats(channelID int, metrics model.StatsMetrics) {

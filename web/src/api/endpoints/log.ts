@@ -21,6 +21,7 @@ export type RelayLogWSRecovery = 'reconnect' | 'replay' | 'downgrade';
 export interface ChannelAttempt {
     channel_id: number;
     channel_key_id?: number;
+    channel_key_name?: string; // 渠道 Key 备注名, 便于定位是哪把 key 出问题
     channel_name: string;
     model_name: string;
     attempt_num: number;    // 第几次尝试

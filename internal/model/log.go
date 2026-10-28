@@ -12,15 +12,16 @@ const (
 
 // ChannelAttempt 记录单次渠道尝试的决策和结果
 type ChannelAttempt struct {
-	ChannelID    int           `json:"channel_id"`
-	ChannelKeyID int           `json:"channel_key_id,omitempty"`
-	ChannelName  string        `json:"channel_name"`
-	ModelName    string        `json:"model_name"`
-	AttemptNum   int           `json:"attempt_num"`
-	Status       AttemptStatus `json:"status"`
-	Duration     int           `json:"duration"`
-	Sticky       bool          `json:"sticky,omitempty"`
-	Msg          string        `json:"msg,omitempty"`
+	ChannelID      int           `json:"channel_id"`
+	ChannelKeyID   int           `json:"channel_key_id,omitempty"`
+	ChannelKeyName string        `json:"channel_key_name,omitempty"` // 实际使用的渠道 Key 备注名, 便于排查
+	ChannelName    string        `json:"channel_name"`
+	ModelName      string        `json:"model_name"`
+	AttemptNum     int           `json:"attempt_num"`
+	Status         AttemptStatus `json:"status"`
+	Duration       int           `json:"duration"`
+	Sticky         bool          `json:"sticky,omitempty"`
+	Msg            string        `json:"msg,omitempty"`
 }
 
 // RelayLogWSMode 表示本次上游 WebSocket 的会话/恢复模式。

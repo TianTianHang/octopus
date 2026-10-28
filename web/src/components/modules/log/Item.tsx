@@ -313,7 +313,10 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
                                         {attempt.channel_name}
                                     </span>
                                     <span className="text-[10px] text-muted-foreground">
-                                        {attempt.model_name} • {formatDuration(attempt.totalDuration)}
+                                        {attempt.model_name}
+                                        {attempt.channel_key_name ? ` • ${attempt.channel_key_name}` : ''}
+                                        {' • '}
+                                        {formatDuration(attempt.totalDuration)}
                                     </span>
                                 </div>
                                 {attempt.repeat > 1 ? (
@@ -895,7 +898,8 @@ export function LogCard({ log, siteTargets }: { log: RelayLog; siteTargets: LogS
                                                                                                 {attempt.channel_name}
                                                                                             </span>
                                                                                             <span className="text-muted-foreground truncate">
-                                                                                                ({attempt.model_name})
+                                                                                                ({attempt.model_name}
+                                                                                                {attempt.channel_key_name ? ` · ${attempt.channel_key_name}` : ''})
                                                                                             </span>
                                                                                             {attempt.sticky ? (
                                                                                                 <Pin className="size-3.5 shrink-0 text-amber-500" />
