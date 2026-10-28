@@ -28,6 +28,22 @@ PROVIDERS = [
     "xiaomi",      # MiMo 系列
 ]
 
+# 各厂商自研模型的 family 前缀, 与 internal/price/price.go 的 developerFamilies 保持一致。
+# 聚合厂商会同时托管第三方模型, 只按 family 收录自研系列, 避免预设里写入别家的价格。
+DEVELOPER_FAMILIES: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt", "o", "text-embedding"),
+    "anthropic": ("claude",),
+    "google": ("gemini", "gemma", "lyria", "veo"),
+    "deepseek": ("deepseek",),
+    "xai": ("grok",),
+    "alibaba": ("qwen", "qvq"),
+    "zhipuai": ("glm",),
+    "minimax": ("minimax",),
+    "moonshotai": ("kimi",),
+    "v0": ("v0",),
+    "xiaomi": ("mimo",),
+}
+
 # 其他模型别名映射 (非 Claude)
 MODEL_ALIASES: dict[str, list[str]] = {
     # 在这里添加其他模型的别名
@@ -182,6 +198,17 @@ def main():
             cost = model_data.get("cost", {})
             
             if not model_id:
+                continue
+
+            # 与运行时过滤一致: 只收录带文本输出的模型, 图片/音频/视频按 token 计价没有意义。
+            output_modalities = (model_data.get("modalities") or {}).get("output") or []
+            if "text" not in output_modalities:
+                continue
+
+            # 只收录该厂商自研系列; 未配置前缀的厂商不做 family 过滤。
+            family_prefixes = DEVELOPER_FAMILIES.get(provider, ())
+            family = (model_data.get("family") or "").lower()
+            if family_prefixes and not family.startswith(family_prefixes):
                 continue
             
             # 添加原始模型（按 id 去重）
