@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+
+	"github.com/dlclark/regexp2"
 )
 
 // relay 日志保留天数的安全边界。
@@ -55,7 +57,12 @@ const (
 	SettingKeyOutlierReapMinutes               SettingKey = "outlier_reap_minutes"                 // POR 窗口内存回收 TTL(分钟)
 	SettingKeyOutlierCFRecoverMinutes          SettingKey = "outlier_cf_recover_minutes"           // POR CF 退役渠道恢复探活冷却(分钟)
 	SettingKeyApiBaseUrl                       SettingKey = "api_base_url"                         // 对外服务基础地址，用于一键导出客户端配置，为空时不显示导出入口
+	SettingKeyModelFilter                      SettingKey = "model_filter"                         // 拉取模型列表时的全局过滤表达式，与渠道级过滤同时生效；留空表示不过滤
 )
+
+// ModelFilterMaxLength 限制全局过滤表达式的长度：表达式由运维手写，
+// 过长的输入只会让编译和匹配变慢，没有实际收益。
+const ModelFilterMaxLength = 1024
 
 type Setting struct {
 	Key   SettingKey `json:"key" gorm:"primaryKey"`
@@ -96,6 +103,7 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyOutlierReapMinutes, Value: "30"},      // 窗口 30 分钟无流量回收
 		{Key: SettingKeyOutlierCFRecoverMinutes, Value: "30"}, // CF 退役渠道 30 分钟后才探活恢复
 		{Key: SettingKeyApiBaseUrl, Value: ""},                // 默认为空，不显示客户端导出入口
+		{Key: SettingKeyModelFilter, Value: ""},               // 默认不过滤模型
 	}
 }
 
@@ -170,6 +178,18 @@ func (s *Setting) Validate() error {
 		}
 		if parsedURL.Host == "" {
 			return fmt.Errorf("proxy URL must have a host")
+		}
+		return nil
+	case SettingKeyModelFilter:
+		if s.Value == "" {
+			return nil
+		}
+		if len(s.Value) > ModelFilterMaxLength {
+			return fmt.Errorf("model filter must be at most %d characters", ModelFilterMaxLength)
+		}
+		// 编译参数必须与拉取模型时一致，否则会出现"设置能保存但同步时编译失败"。
+		if _, err := regexp2.Compile(s.Value, regexp2.ECMAScript); err != nil {
+			return fmt.Errorf("model filter is not a valid regular expression: %w", err)
 		}
 		return nil
 	case SettingKeyApiBaseUrl:

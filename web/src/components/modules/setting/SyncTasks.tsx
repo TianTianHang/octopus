@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { CalendarCheck2, CalendarSync, DollarSign, Globe2, RefreshCw, type LucideIcon } from 'lucide-react';
+import { CalendarCheck2, CalendarSync, DollarSign, Filter, Globe2, RefreshCw, type LucideIcon } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { SettingKey } from '@/api/endpoints/setting';
@@ -11,7 +11,7 @@ import { useCheckinAllSites, useSiteLastCheckinTime, useSiteLastSyncTime, useSyn
 import { toast } from '@/components/common/Toast';
 import { useSettingStore } from '@/stores/setting';
 import { translateSiteMessage } from '@/components/modules/site/site-message';
-import { SettingCard, useSettingField } from './shared';
+import { SettingCard, SettingRow, useSettingField } from './shared';
 
 function getErrorMessage(error: unknown, fallback: string) {
     if (error instanceof Error && error.message.trim()) {
@@ -77,6 +77,7 @@ export function SettingSyncTasks() {
     const locale = useSettingStore((state) => state.locale);
 
     const syncChannel = useSyncChannel();
+    const modelFilter = useSettingField(SettingKey.ModelFilter);
     const { data: lastSyncTime } = useLastSyncTime();
     const updatePrice = useUpdateModelPrice();
     const { data: lastUpdateTime } = useLastUpdateTime();
@@ -113,6 +114,21 @@ export function SettingSyncTasks() {
                     },
                 })}
             />
+
+            {/* 全局模型过滤: 与渠道自身的 match_regex 同时生效 */}
+            <SettingRow
+                icon={Filter}
+                label={t('syncTasks.modelFilter.label')}
+                tooltip={t('syncTasks.modelFilter.description')}
+            >
+                <Input
+                    value={modelFilter.value}
+                    onChange={(e) => modelFilter.setValue(e.target.value)}
+                    onBlur={modelFilter.save}
+                    placeholder={t('syncTasks.modelFilter.placeholder')}
+                    className="w-64 rounded-xl font-mono"
+                />
+            </SettingRow>
 
             {/* 模型价格更新 */}
             <TaskRow

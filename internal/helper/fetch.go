@@ -7,13 +7,20 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/dlclark/regexp2"
 )
 
 const modelFetchUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
+
+// modelFilterMatchTimeout 限制单次过滤匹配的耗时。表达式由运维手写，
+// 不能让一条回溯爆炸的正则拖死整个模型同步任务。
+const modelFilterMatchTimeout = 2 * time.Second
 
 func FetchModels(ctx context.Context, request model.Channel) ([]string, error) {
 	client, err := ChannelHTTPClientWithContext(ctx, &request)
@@ -32,24 +39,73 @@ func FetchModels(ctx context.Context, request model.Channel) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if request.MatchRegex != nil && *request.MatchRegex != "" {
-		matchModel := make([]string, 0)
-		re, err := regexp2.Compile(*request.MatchRegex, regexp2.ECMAScript)
-		if err != nil {
-			return nil, err
+	channelFilter, err := compileModelFilter(request.MatchRegex)
+	if err != nil {
+		return nil, err
+	}
+	// 渠道级与全局过滤是 AND 关系：模型必须同时通过两者才保留，留空的一侧不生效。
+	return filterModels(fetchModel, channelFilter, globalModelFilter())
+}
+
+// compileModelFilter 把过滤表达式编译成匹配器；空表达式返回 nil 表示不过滤。
+func compileModelFilter(pattern *string) (*regexp2.Regexp, error) {
+	if pattern == nil || strings.TrimSpace(*pattern) == "" {
+		return nil, nil
+	}
+	re, err := regexp2.Compile(*pattern, regexp2.ECMAScript)
+	if err != nil {
+		return nil, err
+	}
+	re.MatchTimeout = modelFilterMatchTimeout
+	return re, nil
+}
+
+// globalModelFilter 读取设置页维护的全局过滤表达式。
+// 设置缺行或表达式非法时按不过滤处理并记一条警告：单条坏配置不应该让所有渠道的模型同步失败，
+// 写入路径上的 Validate 已经拦住了新保存的非法值。
+func globalModelFilter() *regexp2.Regexp {
+	pattern, err := op.SettingGetString(model.SettingKeyModelFilter)
+	if err != nil || strings.TrimSpace(pattern) == "" {
+		return nil
+	}
+	re, err := compileModelFilter(&pattern)
+	if err != nil {
+		log.Warnf("invalid global model filter ignored: %v", err)
+		return nil
+	}
+	return re
+}
+
+// filterModels 保留同时匹配全部过滤器的模型名；没有生效的过滤器时原样返回。
+// 保持上游返回的顺序，界面上的模型排列才不会每次刷新都变。
+func filterModels(models []string, filters ...*regexp2.Regexp) ([]string, error) {
+	active := make([]*regexp2.Regexp, 0, len(filters))
+	for _, re := range filters {
+		if re != nil {
+			active = append(active, re)
 		}
-		for _, model := range fetchModel {
-			matched, err := re.MatchString(model)
+	}
+	if len(active) == 0 {
+		return models, nil
+	}
+	matched := make([]string, 0, len(models))
+	for _, name := range models {
+		keep := true
+		for _, re := range active {
+			hit, err := re.MatchString(name)
 			if err != nil {
 				return nil, err
 			}
-			if matched {
-				matchModel = append(matchModel, model)
+			if !hit {
+				keep = false
+				break
 			}
 		}
-		return matchModel, nil
+		if keep {
+			matched = append(matched, name)
+		}
 	}
-	return fetchModel, nil
+	return matched, nil
 }
 
 // refer: https://platform.openai.com/docs/api-reference/models/list

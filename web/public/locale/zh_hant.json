@@ -461,6 +461,11 @@
                 "pending": "簽到中...",
                 "success": "已觸發後台站點全量簽到",
                 "failed": "觸發簽到失敗"
+            },
+            "modelFilter": {
+                "label": "全域模型過濾",
+                "description": "拉取各供應源模型時統一套用的正規表示式（ECMAScript），與供應源自身的過濾同時生效（AND）。留空表示不過濾。",
+                "placeholder": "例如 ^(gpt|claude)-"
             }
         },
         "data": {

@@ -461,6 +461,11 @@
                 "pending": "签到中...",
                 "success": "已触发后台站点全量签到",
                 "failed": "触发签到失败"
+            },
+            "modelFilter": {
+                "label": "全局模型过滤",
+                "description": "拉取各渠道模型时统一应用的正则表达式（ECMAScript），与渠道自身的过滤同时生效（AND）。留空表示不过滤。",
+                "placeholder": "例如 ^(gpt|claude)-"
             }
         },
         "data": {

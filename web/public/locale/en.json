@@ -461,6 +461,11 @@
                 "pending": "Checking in...",
                 "success": "Background site check-in triggered",
                 "failed": "Failed to trigger site check-in"
+            },
+            "modelFilter": {
+                "label": "Global model filter",
+                "description": "ECMAScript regular expression applied when fetching models from every channel, combined (AND) with each channel's own filter. Leave empty to keep all models.",
+                "placeholder": "e.g. ^(gpt|claude)-"
             }
         },
         "data": {
