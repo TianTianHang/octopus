@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server/middleware"
@@ -15,6 +16,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// sseHeartbeatInterval 是日志流的心跳间隔: 空闲连接要定期有字节流过,
+// 否则反向代理会按各自的空闲超时把长连接断掉。
+const sseHeartbeatInterval = 15 * time.Second
 
 func init() {
 	router.NewGroupRouter("/api/v1/log").
@@ -286,12 +291,27 @@ func streamLog(c *gin.Context) {
 	logChan := op.RelayLogSubscribe()
 	defer op.RelayLogUnsubscribe(logChan)
 
+	// 先写一条注释帧并立即刷出。Go 的响应头在第一次 Write/Flush 之前不会真正发出,
+	// 空闲时客户端的 EventSource 会一直停在 CONNECTING(onopen 不触发), 反向代理也容易
+	// 把"还没有任何字节"的连接当成超时断开。
+	if err := writeSSEComment(c, "connected"); err != nil {
+		return
+	}
+
+	// 定期写心跳注释, 让空闲连接上有字节流过, 避免中间代理按空闲超时切断日志流。
+	heartbeat := time.NewTicker(sseHeartbeatInterval)
+	defer heartbeat.Stop()
+
 	ctx := c.Request.Context()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			if err := writeSSEComment(c, "ping"); err != nil {
+				return
+			}
 		case log, ok := <-logChan:
 			if !ok {
 				return
@@ -300,8 +320,20 @@ func streamLog(c *gin.Context) {
 			if err != nil {
 				continue
 			}
-			c.Writer.Write([]byte(fmt.Sprintf("data: %s\n\n", data)))
+			if _, err := c.Writer.Write([]byte(fmt.Sprintf("data: %s\n\n", data))); err != nil {
+				return
+			}
 			c.Writer.Flush()
 		}
 	}
+}
+
+// writeSSEComment 写一条 SSE 注释帧并立即刷出。注释帧会被 EventSource 忽略,
+// 只用于立即发出响应头、探测连通性以及空闲保活。
+func writeSSEComment(c *gin.Context, text string) error {
+	if _, err := c.Writer.Write([]byte(": " + text + "\n\n")); err != nil {
+		return err
+	}
+	c.Writer.Flush()
+	return nil
 }
